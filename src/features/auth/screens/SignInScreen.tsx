@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import { StyleSheet, Text, TextInput } from 'react-native';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { PrimaryButton } from '../../../components/PrimaryButton';
-import { colors } from '../../../theme/colors';
-import { useAuth } from '../context/AuthContext';
-import { AuthScreenLayout } from '../components/AuthScreenLayout';
 import type { SignInScreenProps } from '../../../navigation/types';
+import { colors } from '../../../theme/colors';
+import { AuthScreenLayout } from '../components/AuthScreenLayout';
+import { useAuth } from '../context/AuthContext';
 
 export function SignInScreen({ navigation }: SignInScreenProps) {
-  const { requestOtp } = useAuth();
+  const { isNativeAuthSupported, sendEmailOtp, unsupportedMessage } = useAuth();
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -18,7 +18,7 @@ export function SignInScreen({ navigation }: SignInScreenProps) {
     setError('');
 
     try {
-      const normalizedEmail = await requestOtp(email);
+      const normalizedEmail = await sendEmailOtp(email);
       navigation.navigate('VerifyOtp', { email: normalizedEmail });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Unable to continue right now.');
@@ -30,9 +30,22 @@ export function SignInScreen({ navigation }: SignInScreenProps) {
   return (
     <AuthScreenLayout
       error={error}
-      subtitle="Use email-only sign in for kiosk operators. We will mock the OTP for now."
+      subtitle={
+        isNativeAuthSupported
+          ? 'Use the same staging email OTP flow as Jetpac. We will send a real verification code.'
+          : unsupportedMessage ?? 'This auth flow is not available in the current runtime.'
+      }
       title="Partner login"
     >
+      {!isNativeAuthSupported ? (
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>Native dev build required</Text>
+          <Text style={styles.infoBody}>
+            Launch this app with a development build. Expo Go cannot run the native Auth0 SDK.
+          </Text>
+        </View>
+      ) : null}
+
       <Text style={styles.label}>Email address</Text>
       <TextInput
         autoCapitalize="none"
@@ -45,7 +58,7 @@ export function SignInScreen({ navigation }: SignInScreenProps) {
         value={email}
       />
       <PrimaryButton
-        disabled={isSubmitting}
+        disabled={isSubmitting || !isNativeAuthSupported}
         label={isSubmitting ? 'Sending...' : 'Continue'}
         onPress={handleContinue}
       />
@@ -68,5 +81,21 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     fontSize: 16,
     color: colors.text,
+  },
+  infoCard: {
+    borderRadius: 16,
+    backgroundColor: colors.primarySoft,
+    padding: 14,
+    gap: 4,
+  },
+  infoTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.primaryStrong,
+  },
+  infoBody: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: colors.textMuted,
   },
 });

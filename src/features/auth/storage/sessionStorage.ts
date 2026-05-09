@@ -1,9 +1,22 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { User } from 'react-native-auth0';
 
 const SESSION_KEY = 'jetpac-partners.session';
 
+export type SessionUser = Pick<
+  User,
+  'sub' | 'name' | 'givenName' | 'familyName' | 'email' | 'picture'
+>;
+
 export type Session = {
   email: string;
+  accessToken: string;
+  idToken: string;
+  tokenType: string;
+  expiresAt: number;
+  refreshToken?: string;
+  scope?: string;
+  user?: SessionUser | null;
 };
 
 export async function getStoredSession() {

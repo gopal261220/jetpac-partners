@@ -8,10 +8,12 @@ type AuthScreenLayoutProps = PropsWithChildren<{
   title: string;
   subtitle: string;
   error?: string;
+  eyebrow?: string;
 }>;
 
 export function AuthScreenLayout({
   children,
+  eyebrow = 'Staging Auth0',
   error,
   subtitle,
   title,
@@ -23,7 +25,7 @@ export function AuthScreenLayout({
         style={styles.keyboardView}
       >
         <View style={styles.card}>
-          <Text style={styles.eyebrow}>Android-first demo</Text>
+          <Text style={styles.eyebrow}>{eyebrow}</Text>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>{subtitle}</Text>
           <View style={styles.body}>{children}</View>
