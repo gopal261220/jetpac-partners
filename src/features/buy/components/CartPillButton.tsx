@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors } from '../../../theme/colors';
@@ -10,6 +11,7 @@ type CartPillButtonProps = {
 export function CartPillButton({ itemCount, onPress }: CartPillButtonProps) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.button, pressed && styles.pressed]}>
+      <Ionicons color={colors.primaryStrong} name="cart-outline" size={16} />
       <Text style={styles.label}>Cart</Text>
       {itemCount > 0 ? (
         <View style={styles.badge}>
@@ -29,8 +31,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surfaceSoft,
   },
   pressed: {
     opacity: 0.9,
@@ -38,7 +40,7 @@ const styles = StyleSheet.create({
   label: {
     fontSize: 14,
     fontWeight: '700',
-    color: colors.text,
+    color: colors.primaryStrong,
   },
   badge: {
     minWidth: 22,

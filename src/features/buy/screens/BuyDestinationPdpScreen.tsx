@@ -1,19 +1,22 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { PrimaryButton } from '../../../components/PrimaryButton';
 import { ScreenContainer } from '../../../components/ScreenContainer';
-import type { BuyDestinationPdpScreenProps } from '../../../navigation/types';
+import type { AppTabsParamList, BuyDestinationPdpScreenProps } from '../../../navigation/types';
 import { colors } from '../../../theme/colors';
 import { CartPillButton } from '../components/CartPillButton';
 import { QuantityStepper } from '../components/QuantityStepper';
 import { useBuyCart } from '../context/BuyCartContext';
 import { findDestinationById } from '../data/catalog';
+import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 
 export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdpScreenProps) {
   const { destinationId } = route.params;
   const destination = findDestinationById(destinationId);
   const { getSelectionsForDestination, itemCount, upsertDestinationSelection } = useBuyCart();
+  const parentNavigation = navigation.getParent<BottomTabNavigationProp<AppTabsParamList>>();
 
   const currentSelections = useMemo(
     () => getSelectionsForDestination(destinationId),
@@ -85,17 +88,29 @@ export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdp
           <Text style={styles.navActionText}>Back</Text>
         </Pressable>
       }
-      rightAction={<CartPillButton itemCount={itemCount} onPress={() => navigation.navigate('Cart')} />}
+      rightAction={<CartPillButton itemCount={itemCount} onPress={() => parentNavigation?.navigate('Cart')} />}
       subtitle={`${destination.region} • choose one or more packs`}
       title={destination.name}
     >
       <View style={styles.heroCard}>
-        <Text style={styles.heroFlag}>{destination.flag}</Text>
+        <View style={styles.heroFlagOrb}>
+          <Text style={styles.heroFlag}>{destination.flag}</Text>
+        </View>
         <View style={styles.heroCopy}>
           <Text style={styles.heroTitle}>{destination.name} data packs</Text>
           <Text style={styles.heroSubtitle}>
             Operators can select multiple packs and quantities before sending them into the cart.
           </Text>
+          <View style={styles.heroMetaRow}>
+            <View style={styles.heroMetaChip}>
+              <Ionicons color={colors.primaryStrong} name="layers-outline" size={14} />
+              <Text style={styles.heroMetaText}>{destination.packs.length} pack types</Text>
+            </View>
+            <View style={styles.heroMetaChip}>
+              <Ionicons color={colors.primaryStrong} name="bag-check-outline" size={14} />
+              <Text style={styles.heroMetaText}>Multi-select enabled</Text>
+            </View>
+          </View>
         </View>
       </View>
 
@@ -108,9 +123,14 @@ export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdp
               <View style={styles.packHeader}>
                 <View style={styles.packCopy}>
                   <Text style={styles.packName}>{pack.name}</Text>
-                  <Text style={styles.packMeta}>
-                    {pack.dataAllowance} • {pack.validity}
-                  </Text>
+                  <View style={styles.packMetaRow}>
+                    <View style={styles.packMetaChip}>
+                      <Text style={styles.packMetaChipText}>{pack.dataAllowance}</Text>
+                    </View>
+                    <View style={styles.packMetaChip}>
+                      <Text style={styles.packMetaChipText}>{pack.validity}</Text>
+                    </View>
+                  </View>
                 </View>
                 <Text style={styles.packPrice}>${pack.priceUsd}</Text>
               </View>
@@ -159,18 +179,31 @@ const styles = StyleSheet.create({
   },
   heroCard: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 14,
-    borderRadius: 24,
+    borderRadius: 28,
     backgroundColor: colors.surface,
-    padding: 18,
+    padding: 20,
+    shadowColor: colors.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
+  },
+  heroFlagOrb: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surfaceSoft,
   },
   heroFlag: {
-    fontSize: 34,
+    fontSize: 32,
   },
   heroCopy: {
     flex: 1,
-    gap: 4,
+    gap: 6,
   },
   heroTitle: {
     fontSize: 19,
@@ -182,6 +215,26 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     color: colors.textMuted,
   },
+  heroMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  heroMetaChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: colors.primarySoft,
+  },
+  heroMetaText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primaryStrong,
+  },
   packList: {
     gap: 12,
     paddingBottom: 12,
@@ -191,10 +244,16 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     padding: 18,
     gap: 14,
+    shadowColor: colors.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 2,
   },
   packCardActive: {
     borderWidth: 1,
     borderColor: colors.primary,
+    backgroundColor: colors.surfaceMuted,
   },
   packHeader: {
     flexDirection: 'row',
@@ -206,19 +265,31 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 4,
   },
+  packMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  packMetaChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: colors.surfaceSoft,
+  },
+  packMetaChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primaryStrong,
+  },
   packName: {
     fontSize: 18,
     fontWeight: '800',
     color: colors.text,
   },
-  packMeta: {
-    fontSize: 14,
-    color: colors.textMuted,
-  },
   packPrice: {
     fontSize: 20,
     fontWeight: '800',
-    color: colors.text,
+    color: colors.primaryStrong,
   },
   packFooter: {
     flexDirection: 'row',
@@ -236,6 +307,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     padding: 16,
     gap: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   footerSummary: {
     flexDirection: 'row',

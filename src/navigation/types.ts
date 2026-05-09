@@ -10,12 +10,12 @@ export type AuthStackParamList = {
 export type BuyStackParamList = {
   DestinationList: undefined;
   DestinationPdp: { destinationId: string };
-  Cart: undefined;
 };
 
 export type AppTabsParamList = {
   Home: undefined;
   Buy: NavigatorScreenParams<BuyStackParamList> | undefined;
+  Cart: undefined;
   Inventory: undefined;
   Wallet: undefined;
 };
@@ -40,7 +40,6 @@ export type BuyDestinationPdpScreenProps = NativeStackScreenProps<
   BuyStackParamList,
   'DestinationPdp'
 >;
-export type CartScreenProps = NativeStackScreenProps<BuyStackParamList, 'Cart'>;
 
 export type AppTabScreenProps<T extends keyof AppTabsParamList> = CompositeScreenProps<
   BottomTabScreenProps<AppTabsParamList, T>,

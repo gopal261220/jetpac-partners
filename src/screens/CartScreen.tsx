@@ -1,58 +1,54 @@
-import { useMemo } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { PrimaryButton } from '../../../components/PrimaryButton';
-import { ScreenContainer } from '../../../components/ScreenContainer';
-import type { CartScreenProps } from '../../../navigation/types';
-import { colors } from '../../../theme/colors';
-import { useBuyCart } from '../context/BuyCartContext';
+import { PrimaryButton } from '../components/PrimaryButton';
+import { ScreenContainer } from '../components/ScreenContainer';
+import { useBuyCart } from '../features/buy/context/BuyCartContext';
+import type { AppTabScreenProps } from '../navigation/types';
+import { colors } from '../theme/colors';
 
-export function BuyCartScreen({ navigation }: CartScreenProps) {
+export function CartScreen({ navigation }: AppTabScreenProps<'Cart'>) {
   const { clearCart, destinationCount, itemCount, lines, removeLine, subtotal } = useBuyCart();
 
-  const groupedLines = useMemo(() => {
-    return lines.reduce<
-      Array<{
-        destinationId: string;
-        destinationName: string;
-        destinationFlag: string;
-        lines: typeof lines;
-      }>
-    >((accumulator, line) => {
-      const existingGroup = accumulator.find((group) => group.destinationId === line.destinationId);
+  const groupedLines = lines.reduce<
+    Array<{
+      destinationId: string;
+      destinationName: string;
+      destinationFlag: string;
+      lines: typeof lines;
+    }>
+  >((accumulator, line) => {
+    const existingGroup = accumulator.find((group) => group.destinationId === line.destinationId);
 
-      if (existingGroup) {
-        existingGroup.lines.push(line);
-        return accumulator;
-      }
-
-      accumulator.push({
-        destinationId: line.destinationId,
-        destinationName: line.destinationName,
-        destinationFlag: line.destinationFlag,
-        lines: [line],
-      });
+    if (existingGroup) {
+      existingGroup.lines.push(line);
       return accumulator;
-    }, []);
-  }, [lines]);
+    }
+
+    accumulator.push({
+      destinationId: line.destinationId,
+      destinationName: line.destinationName,
+      destinationFlag: line.destinationFlag,
+      lines: [line],
+    });
+    return accumulator;
+  }, []);
 
   return (
     <ScreenContainer
-      leftAction={
-        <Pressable onPress={() => navigation.goBack()} style={styles.navAction}>
-          <Text style={styles.navActionText}>Back</Text>
-        </Pressable>
-      }
-      subtitle="Multiple destinations and pack quantities stay grouped here for review."
+      subtitle="Review every destination and pack before we add the real purchase confirmation step."
       title="Cart"
     >
       {lines.length === 0 ? (
         <View style={styles.emptyCard}>
+          <Text style={styles.emptyBadge}>Ready for checkout</Text>
           <Text style={styles.emptyTitle}>Your cart is empty</Text>
           <Text style={styles.emptyDescription}>
-            Add packs from destination PDP pages to start building a purchase.
+            Add packs from the buy journey to start building a multi-destination purchase.
           </Text>
-          <PrimaryButton label="Browse destinations" onPress={() => navigation.navigate('DestinationList')} />
+          <PrimaryButton
+            label="Browse destinations"
+            onPress={() => navigation.navigate('Buy', { screen: 'DestinationList' })}
+          />
         </View>
       ) : (
         <>
@@ -99,7 +95,7 @@ export function BuyCartScreen({ navigation }: CartScreenProps) {
             <View style={styles.summaryActions}>
               <PrimaryButton
                 label="Keep shopping"
-                onPress={() => navigation.navigate('DestinationList')}
+                onPress={() => navigation.navigate('Buy', { screen: 'DestinationList' })}
                 variant="secondary"
               />
               <PrimaryButton label="Clear cart" onPress={clearCart} variant="secondary" />
@@ -112,15 +108,6 @@ export function BuyCartScreen({ navigation }: CartScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  navAction: {
-    paddingVertical: 8,
-    paddingRight: 10,
-  },
-  navActionText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.primary,
-  },
   cartContent: {
     gap: 12,
     paddingBottom: 12,
@@ -130,6 +117,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     padding: 18,
     gap: 12,
+    shadowColor: colors.shadow,
+    shadowOpacity: 1,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 3,
   },
   groupHeader: {
     flexDirection: 'row',
@@ -175,7 +167,7 @@ const styles = StyleSheet.create({
   linePrice: {
     fontSize: 15,
     fontWeight: '800',
-    color: colors.text,
+    color: colors.primaryStrong,
   },
   removeButton: {
     paddingVertical: 4,
@@ -190,6 +182,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     padding: 16,
     gap: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   summaryRow: {
     flexDirection: 'row',
@@ -206,19 +200,30 @@ const styles = StyleSheet.create({
   summaryAmount: {
     fontSize: 18,
     fontWeight: '800',
-    color: colors.primary,
+    color: colors.primaryStrong,
   },
   summaryActions: {
     gap: 10,
   },
   emptyCard: {
-    borderRadius: 24,
+    borderRadius: 28,
     backgroundColor: colors.surface,
     padding: 24,
     gap: 10,
   },
+  emptyBadge: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: colors.primarySoft,
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.primaryStrong,
+    overflow: 'hidden',
+  },
   emptyTitle: {
-    fontSize: 20,
+    fontSize: 24,
     fontWeight: '800',
     color: colors.text,
   },

@@ -44,7 +44,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.surfaceMuted,
   },
   buttonDisabled: {
     opacity: 0.45,
@@ -55,7 +55,7 @@ const styles = StyleSheet.create({
   symbol: {
     fontSize: 18,
     fontWeight: '700',
-    color: colors.text,
+    color: colors.primaryStrong,
   },
   value: {
     minWidth: 20,
