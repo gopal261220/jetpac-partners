@@ -319,6 +319,14 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
 
   const inventoryPickerPacks = useMemo(() => {
     const grouped = new Map<string, CatalogPackOption & { availableQuantity: number }>();
+    const reservedQuantities = new Map<string, number>();
+
+    userRecipients.forEach((recipient) => {
+      recipient.requestedPacks.forEach((pack) => {
+        const key = `${pack.destinationId}:${pack.packId}`;
+        reservedQuantities.set(key, (reservedQuantities.get(key) ?? 0) + pack.quantity);
+      });
+    });
 
     managementItems
       .filter((item) => item.status === 'unallocated')
@@ -345,11 +353,25 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
         });
       });
 
-    return Array.from(grouped.values()).filter((pack) => {
-      const haystack = `${pack.destinationName} ${pack.packName} ${pack.dataAllowance} ${pack.validity}`.toLowerCase();
-      return !deferredPickerQuery || haystack.includes(deferredPickerQuery);
-    });
-  }, [deferredPickerQuery, managementItems]);
+    return Array.from(grouped.values())
+      .map((pack) => {
+        const reservationKey = `${pack.destinationId}:${pack.packId}`;
+        const reservedQuantity = reservedQuantities.get(reservationKey) ?? 0;
+
+        return {
+          ...pack,
+          availableQuantity: Math.max(0, pack.availableQuantity - reservedQuantity),
+        };
+      })
+      .filter((pack) => {
+        if (pack.availableQuantity < 1) {
+          return false;
+        }
+
+        const haystack = `${pack.destinationName} ${pack.packName} ${pack.dataAllowance} ${pack.validity}`.toLowerCase();
+        return !deferredPickerQuery || haystack.includes(deferredPickerQuery);
+      });
+  }, [deferredPickerQuery, managementItems, userRecipients]);
 
   const filteredCatalogPacks = useMemo(() => {
     return catalogPackOptions.filter((pack) => {

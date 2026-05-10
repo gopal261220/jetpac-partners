@@ -19,7 +19,7 @@ import { colors } from '../theme/colors';
 import { typography } from '../theme/typography';
 
 type InventoryTab = 'packs' | 'esims';
-type PackFlowStep = 'destination' | 'packs' | 'allocation' | null;
+type PackFlowStep = 'destination' | 'packs' | 'allocation' | 'success' | null;
 
 type PurchaseRecipientDraft = {
   email: string;
@@ -81,6 +81,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   const [purchaseRecipient, setPurchaseRecipient] = useState<PurchaseRecipientDraft>(createRecipient());
   const [esimQuantityInput, setEsimQuantityInput] = useState('10');
   const [resultState, setResultState] = useState<FlowResultState | null>(null);
+  const [packSuccessState, setPackSuccessState] = useState<FlowResultState | null>(null);
   const [packFlowStep, setPackFlowStep] = useState<PackFlowStep>(null);
   const [showEsimSheet, setShowEsimSheet] = useState(false);
   const [isSubmittingPackPurchase, setIsSubmittingPackPurchase] = useState(false);
@@ -310,6 +311,11 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
   const effectiveWalletBalanceUsd = liveWalletBalanceUsd ?? 0;
   const hasPackTopUpBalanceIssue = effectiveWalletBalanceUsd < totalPackTopUpCost;
+  const canBuySelectedPacks =
+    selectedPurchasePacks.length > 0 &&
+    !isLoadingPacks &&
+    !isSubmittingPackPurchase &&
+    !hasPackTopUpBalanceIssue;
   const esimQuantity = useMemo(() => {
     const parsedQuantity = Number.parseInt(esimQuantityInput, 10);
 
@@ -321,6 +327,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   }, [esimQuantityInput]);
   const esimTotalCost = esimQuantity * 1;
   const hasEsimBalanceIssue = esimQuantity > 0 && effectiveWalletBalanceUsd < esimTotalCost;
+  const canBuyEsims = esimQuantity > 0 && !isSubmittingEsimPurchase && !hasEsimBalanceIssue;
   const totalEsimInventory = availableEsimCount;
 
   async function refreshWalletSummary() {
@@ -345,6 +352,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
     setPackSelections({});
     setPurchaseRecipient(createRecipient());
     setPackFlowStep(null);
+    setPackSuccessState(null);
     setDestinationQuery('');
     setPacksError(null);
     setIsLoadingPacks(false);
@@ -457,6 +465,10 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   }
 
   async function buySelectedPacksToInventory() {
+    if (!canBuySelectedPacks) {
+      return;
+    }
+
     setIsSubmittingPackPurchase(true);
     setPurchaseSubmitError(null);
 
@@ -464,13 +476,13 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
       await syncPackAssignments();
       const totalUnits = selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0);
 
-      setResultState({
+      setPackSuccessState({
         title: 'Pack inventory updated',
         body: `${totalUnits} pack${totalUnits === 1 ? '' : 's'} added to inventory.`,
         accent: colors.primaryStrong,
       });
-      await Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
-      resetPackFlow();
+      setPackFlowStep('success');
+      void Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
     } catch (error) {
       setPurchaseSubmitError(error instanceof Error ? error.message : 'Could not complete this purchase.');
     } finally {
@@ -479,6 +491,10 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   }
 
   async function buyAndAllocateSelectedPacks() {
+    if (!canBuySelectedPacks) {
+      return;
+    }
+
     setIsSubmittingPackPurchase(true);
     setPurchaseSubmitError(null);
 
@@ -488,15 +504,15 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
       await syncPackAssignments(receiverUserId);
 
-      setResultState({
+      setPackSuccessState({
         title: receiverUserId ? 'Purchase and assignment complete' : 'Purchase complete',
         body: receiverUserId
           ? `${totalUnits} pack${totalUnits === 1 ? '' : 's'} assigned to ${receiverUserId}.`
           : `${totalUnits} pack${totalUnits === 1 ? '' : 's'} added to inventory without assignment.`,
         accent: colors.primaryStrong,
       });
-      await Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
-      resetPackFlow();
+      setPackFlowStep('success');
+      void Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
     } catch (error) {
       setPurchaseSubmitError(error instanceof Error ? error.message : 'Could not complete this purchase.');
     } finally {
@@ -505,6 +521,14 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   }
 
   async function buyEsims() {
+    if (!canBuyEsims) {
+      if (esimQuantity < 1) {
+        setEsimSubmitError('Enter a valid eSIM quantity.');
+      }
+
+      return;
+    }
+
     if (esimQuantity < 1) {
       setEsimSubmitError('Enter a valid eSIM quantity.');
       return;
@@ -744,6 +768,11 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
                   <Text style={styles.summaryValue}>${totalPackTopUpCost.toFixed(2)}</Text>
                 </View>
                 <Text style={styles.balanceHint}>Wallet balance ${effectiveWalletBalanceUsd.toFixed(2)}</Text>
+                {hasPackTopUpBalanceIssue && selectedPurchasePacks.length ? (
+                  <Text style={styles.stickyWarningText}>
+                    Add credit from Wallet before completing this pack purchase.
+                  </Text>
+                ) : null}
               </View>
               <PrimaryButton
                 disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue || isLoadingPacks}
@@ -751,7 +780,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
                 onPress={() => setPackFlowStep('allocation')}
               />
               <PrimaryButton
-                disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue || isLoadingPacks || isSubmittingPackPurchase}
+                disabled={!canBuySelectedPacks}
                 label={isSubmittingPackPurchase ? 'Buying...' : 'Buy for inventory'}
                 onPress={buySelectedPacksToInventory}
                 variant="secondary"
@@ -777,9 +806,14 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
                 <Text style={styles.summaryValue}>${totalPackTopUpCost.toFixed(2)}</Text>
               </View>
               <Text style={styles.balanceHint}>Wallet balance ${effectiveWalletBalanceUsd.toFixed(2)}</Text>
+              {hasPackTopUpBalanceIssue && selectedPurchasePacks.length ? (
+                <Text style={styles.stickyWarningText}>
+                  Add more wallet credit before purchasing these packs.
+                </Text>
+              ) : null}
             </View>
               <PrimaryButton
-                disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue || isSubmittingPackPurchase}
+                disabled={!canBuySelectedPacks}
                 label={
                   isSubmittingPackPurchase
                     ? 'Processing...'
@@ -797,6 +831,8 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
                 />
               ) : null}
             </>
+          ) : packFlowStep === 'success' ? (
+            <PrimaryButton label="Done" onPress={resetPackFlow} />
           ) : undefined
         }
         onBack={
@@ -814,6 +850,8 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
               ? selectedDestination
                 ? `${selectedDestination.flag} ${selectedDestination.name}`
                 : undefined
+              : packFlowStep === 'success'
+                ? 'Purchase finished successfully.'
               : 'Split the selected packs across multiple users before purchase.'
         }
         title={
@@ -821,6 +859,8 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
             ? 'Select destination'
             : packFlowStep === 'packs'
               ? 'Choose packs'
+              : packFlowStep === 'success'
+                ? 'Done'
               : 'Allocate at purchase'
         }
         visible={Boolean(packFlowStep)}
@@ -948,14 +988,6 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
               </View>
             ))}
 
-            {hasPackTopUpBalanceIssue && selectedPurchasePacks.length ? (
-              <View style={styles.warningCard}>
-                <Text style={styles.warningTitle}>Low balance for this top-up</Text>
-                <Text style={styles.warningBody}>
-                  Add credit from Wallet before completing this pack purchase.
-                </Text>
-              </View>
-            ) : null}
           </View>
         ) : null}
 
@@ -993,6 +1025,19 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
                 <Text style={styles.warningBody}>{purchaseSubmitError}</Text>
               </View>
             ) : null}
+
+          </View>
+        ) : null}
+
+        {packFlowStep === 'success' && packSuccessState ? (
+          <View style={styles.sheetContent}>
+            <View style={styles.resultCard}>
+              <View style={[styles.resultIconOrb, { backgroundColor: packSuccessState.accent }]}>
+                <Ionicons color={colors.surface} name="checkmark" size={20} />
+              </View>
+              <Text style={styles.resultTitle}>{packSuccessState.title}</Text>
+              <Text style={styles.resultBody}>{packSuccessState.body}</Text>
+            </View>
           </View>
         ) : null}
       </BottomSheetModal>
@@ -1016,7 +1061,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
               <Text style={styles.balanceHint}>Wallet balance ${effectiveWalletBalanceUsd.toFixed(2)}</Text>
             </View>
             <PrimaryButton
-              disabled={hasEsimBalanceIssue || isSubmittingEsimPurchase}
+              disabled={!canBuyEsims}
               label={isSubmittingEsimPurchase ? 'Purchasing...' : 'Purchase eSIM'}
               onPress={buyEsims}
             />
@@ -1530,6 +1575,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: typography.body,
     color: colors.primaryStrong,
+  },
+  stickyWarningText: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: typography.body,
+    color: colors.danger,
   },
   warningCard: {
     borderRadius: 20,
