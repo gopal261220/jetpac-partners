@@ -23,9 +23,30 @@ module.exports = ({ config }) => {
     ios: {
       supportsTablet: true,
       bundleIdentifier: 'co.circles.jetpacpartners',
+      infoPlist: {
+        NSAppTransportSecurity: {
+          NSAllowsArbitraryLoads: true,
+          NSAllowsArbitraryLoadsInWebContent: true,
+          NSAllowsLocalNetworking: true,
+          NSExceptionDomains: {
+            'onrender.com': {
+              NSIncludesSubdomains: true,
+              NSTemporaryExceptionAllowsInsecureHTTPLoads: true,
+              NSTemporaryExceptionMinimumTLSVersion: 'TLSv1.0',
+            },
+            'b2b-enterprise-portal.onrender.com': {
+              NSIncludesSubdomains: true,
+              NSTemporaryExceptionAllowsInsecureHTTPLoads: true,
+              NSTemporaryExceptionMinimumTLSVersion: 'TLSv1.0',
+            },
+          },
+        },
+      },
     },
     android: {
       package: 'co.circles.jetpacpartners',
+      permissions: ['INTERNET'],
+      usesCleartextTraffic: true,
       adaptiveIcon: {
         foregroundImage: './assets/adaptive-icon.png',
         backgroundColor: '#ffffff',

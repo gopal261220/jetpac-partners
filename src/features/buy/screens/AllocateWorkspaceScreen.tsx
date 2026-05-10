@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useDeferredValue, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { BottomSheetModal } from '../../../components/BottomSheetModal';
 import { PrimaryButton } from '../../../components/PrimaryButton';
@@ -8,6 +8,8 @@ import { ScreenContainer } from '../../../components/ScreenContainer';
 import type { AppTabScreenProps, AllocateWorkspaceScreenProps } from '../../../navigation/types';
 import { colors } from '../../../theme/colors';
 import { typography } from '../../../theme/typography';
+import { assignPackOrders } from '../api/assign';
+import { fetchPackInventory, type PackInventoryItem, type PackInventoryStatusFilter } from '../api/packInventory';
 import { useBuyFlow } from '../context/BuyFlowContext';
 import { destinationCatalog } from '../data/catalog';
 import type {
@@ -26,7 +28,6 @@ type WorkspaceProps = AllocateWorkspaceScreenProps & {
 };
 
 type WorkspaceView = 'allocate' | 'management';
-type AssignmentFilter = 'all' | InventoryStatus;
 
 type UserRecipientDraft = AllocationRecipientDraft & {
   isExpanded: boolean;
@@ -40,7 +41,7 @@ type PackRecipientDraft = {
 };
 
 type ManagementDraft = {
-  item: InventoryItem;
+  item: PackInventoryItem;
   email: string;
   phone: string;
   quantity: number;
@@ -51,7 +52,7 @@ const allocationModes: Array<{ key: AllocationMode; label: string }> = [
   { key: 'pack', label: 'By pack' },
 ];
 
-const assignmentFilters: AssignmentFilter[] = ['all', 'unassigned', 'assigned', 'pending', 'failed'];
+const assignmentFilters: PackInventoryStatusFilter[] = ['all', 'allocated', 'unallocated'];
 
 const emptyRecipient: RecipientDraft = {
   email: '',
@@ -98,24 +99,24 @@ function getResultCopy(result: AllocationResult) {
   };
 }
 
-function getStatusTone(status: InventoryStatus) {
-  if (status === 'assigned') {
+function getStatusTone(status: InventoryStatus | PackInventoryItem['status']) {
+  if (status === 'assigned' || status === 'allocated') {
     return { backgroundColor: colors.primarySoft, color: colors.primaryStrong };
   }
 
-  if (status === 'pending' || status === 'unassigned') {
+  if (status === 'pending' || status === 'unassigned' || status === 'unallocated') {
     return { backgroundColor: colors.surfaceSoft, color: colors.primaryStrong };
   }
 
   return { backgroundColor: '#F7DEDA', color: colors.danger };
 }
 
-function getManagementActionLabel(status: InventoryStatus) {
-  if (status === 'unassigned') {
+function getManagementActionLabel(status: InventoryStatus | PackInventoryItem['status']) {
+  if (status === 'unassigned' || status === 'unallocated') {
     return 'Assign';
   }
 
-  if (status === 'assigned') {
+  if (status === 'assigned' || status === 'allocated') {
     return 'Reassign';
   }
 
@@ -148,7 +149,6 @@ const catalogPacks = flattenCatalogPacks();
 
 export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   const {
-    assignInventoryItems,
     buildAllocationPreview,
     inventoryItems,
     stockGroups,
@@ -166,12 +166,52 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   const [packRecipients, setPackRecipients] = useState<PackRecipientDraft[]>([createPackRecipient()]);
   const [resultState, setResultState] = useState<AllocationResult | null>(null);
   const [assignmentQuery, setAssignmentQuery] = useState('');
-  const [assignmentFilter, setAssignmentFilter] = useState<AssignmentFilter>('all');
+  const [assignmentFilter, setAssignmentFilter] = useState<PackInventoryStatusFilter>('all');
+  const [managementItems, setManagementItems] = useState<PackInventoryItem[]>([]);
+  const [isLoadingManagement, setIsLoadingManagement] = useState(false);
+  const [managementListError, setManagementListError] = useState('');
   const [managementDraft, setManagementDraft] = useState<ManagementDraft | null>(null);
+  const [managementSubmitError, setManagementSubmitError] = useState('');
+  const [isSubmittingManagement, setIsSubmittingManagement] = useState(false);
 
   const deferredPickerQuery = useDeferredValue(pickerQuery.trim().toLowerCase());
   const deferredPackSearch = useDeferredValue(packSearch.trim().toLowerCase());
   const deferredAssignmentQuery = useDeferredValue(assignmentQuery.trim().toLowerCase());
+
+  useEffect(() => {
+    if (workspaceView !== 'management') {
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function loadManagementItems() {
+      setIsLoadingManagement(true);
+      setManagementListError('');
+
+      try {
+        const nextItems = await fetchPackInventory(assignmentFilter);
+
+        if (!isCancelled) {
+          setManagementItems(nextItems);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setManagementListError(error instanceof Error ? error.message : 'Could not load pack assignments.');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingManagement(false);
+        }
+      }
+    }
+
+    void loadManagementItems();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [assignmentFilter, workspaceView]);
 
   const filteredPickerPacks = useMemo(() => {
     return catalogPacks.filter((pack) => {
@@ -188,14 +228,13 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   }, [deferredPackSearch, stockGroups]);
 
   const filteredAssignmentItems = useMemo(() => {
-    return inventoryItems.filter((item) => {
-      const matchesFilter = assignmentFilter === 'all' ? true : item.status === assignmentFilter;
+    return managementItems.filter((item) => {
       const haystack =
-        `${item.email ?? ''} ${item.phone ?? ''} ${item.destinationName} ${item.packName}`.toLowerCase();
+        `${item.receiverUserId ?? ''} ${item.destinationName} ${item.packName}`.toLowerCase();
       const matchesQuery = !deferredAssignmentQuery || haystack.includes(deferredAssignmentQuery);
-      return matchesFilter && matchesQuery;
+      return matchesQuery;
     });
-  }, [assignmentFilter, deferredAssignmentQuery, inventoryItems]);
+  }, [deferredAssignmentQuery, managementItems]);
 
   const userPreview = useMemo(
     () => buildAllocationPreview(userRecipients.map(({ isExpanded, ...recipient }) => recipient)),
@@ -299,17 +338,17 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   }, [packRecipients, selectedPackGroup, selectedPackPreview]);
 
   const managementAvailableQuantity = useMemo(() => {
-    if (!managementDraft || managementDraft.item.status !== 'unassigned') {
+    if (!managementDraft || managementDraft.item.status !== 'unallocated') {
       return 1;
     }
 
-    return inventoryItems.filter(
+    return managementItems.filter(
       (item) =>
-        item.status === 'unassigned' &&
-        item.destinationId === managementDraft.item.destinationId &&
-        item.packId === managementDraft.item.packId
+        item.status === 'unallocated' &&
+        item.destinationName === managementDraft.item.destinationName &&
+        item.catalogId === managementDraft.item.catalogId
     ).length;
-  }, [inventoryItems, managementDraft]);
+  }, [managementDraft, managementItems]);
 
   const managementError = useMemo(() => {
     if (!managementDraft) {
@@ -324,12 +363,12 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
       return 'Choose at least one pack.';
     }
 
-    if (managementDraft.item.status !== 'unassigned' && managementDraft.quantity !== 1) {
-      return 'Assigned, pending, and failed items can only be updated one at a time.';
+    if (managementDraft.item.status !== 'unallocated' && managementDraft.quantity !== 1) {
+      return 'Allocated packs can only be updated one at a time.';
     }
 
     if (managementDraft.quantity > managementAvailableQuantity) {
-      return 'Quantity is higher than the available unassigned stock.';
+      return 'Quantity is higher than the available unallocated stock.';
     }
 
     return '';
@@ -498,62 +537,66 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
     setPackRecipients([createPackRecipient()]);
   }
 
-  function openManagementSheet(item: InventoryItem) {
+  function openManagementSheet(item: PackInventoryItem) {
+    setManagementSubmitError('');
     setManagementDraft({
       item,
-      email: item.email ?? '',
-      phone: item.phone ?? '',
+      email: item.receiverUserId ?? '',
+      phone: '',
       quantity: 1,
     });
   }
 
-  function submitManagementAction() {
+  async function submitManagementAction() {
     if (!managementDraft || managementError) {
       return;
     }
 
     const { item } = managementDraft;
-    let itemIds: string[] = [item.id];
+    const requestQuantity = item.status === 'unallocated' ? managementDraft.quantity : 1;
 
-    if (item.status === 'unassigned') {
-      itemIds = inventoryItems
-        .filter(
-          (inventoryItem) =>
-            inventoryItem.status === 'unassigned' &&
-            inventoryItem.destinationId === item.destinationId &&
-            inventoryItem.packId === item.packId
-        )
-        .slice(0, managementDraft.quantity)
-        .map((inventoryItem) => inventoryItem.id);
+    setIsSubmittingManagement(true);
+    setManagementSubmitError('');
+
+    try {
+      const catalogId = item.catalogId;
+      const receiverUserId = managementDraft.email.trim() || managementDraft.phone.trim();
+
+      if (catalogId && receiverUserId) {
+        await assignPackOrders(
+          Array.from({ length: requestQuantity }, () => ({
+            catalogId,
+            receiverUserId,
+          }))
+        );
+      }
+
+      const nextItems = await fetchPackInventory(assignmentFilter);
+      setManagementItems(nextItems);
+
+      setManagementDraft(null);
+      setResultState({
+        preview: {
+          lines: [],
+          totalUnits: requestQuantity,
+          stockUnits: requestQuantity,
+          purchaseUnits: 0,
+          walletDeductionUsd: 0,
+          walletBalanceBeforeUsd: walletBalanceUsd,
+          walletBalanceAfterUsd: walletBalanceUsd,
+          hasInsufficientBalance: false,
+        },
+        assignedCount: 1,
+        pendingCount: 0,
+        failedCount: 0,
+        purchasedCount: 0,
+        inventoryItems: [],
+      });
+    } catch (error) {
+      setManagementSubmitError(error instanceof Error ? error.message : 'Could not update this assignment.');
+    } finally {
+      setIsSubmittingManagement(false);
     }
-
-    const result = assignInventoryItems(itemIds, {
-      email: managementDraft.email,
-      phone: managementDraft.phone,
-    });
-
-    if (!result) {
-      return;
-    }
-
-    setManagementDraft(null);
-    setResultState({
-      preview: {
-        lines: [],
-        totalUnits: itemIds.length,
-        stockUnits: itemIds.length,
-        purchaseUnits: 0,
-        walletDeductionUsd: 0,
-        walletBalanceBeforeUsd: walletBalanceUsd,
-        walletBalanceAfterUsd: walletBalanceUsd,
-        hasInsufficientBalance: false,
-      },
-      assignedCount: result.assignmentOutcome === 'assigned' ? 1 : 0,
-      pendingCount: result.assignmentOutcome === 'pending' ? 1 : 0,
-      failedCount: result.assignmentOutcome === 'failed' ? 1 : 0,
-      purchasedCount: 0,
-      inventoryItems: result.updatedItems,
-    });
   }
 
   return (
@@ -844,15 +887,28 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
           </ScrollView>
 
           <View style={styles.section}>
+            {isLoadingManagement ? (
+              <View style={styles.loadingPanel}>
+                <ActivityIndicator color={colors.primaryStrong} size="small" />
+                <Text style={styles.loadingText}>Loading pack inventory</Text>
+              </View>
+            ) : null}
+
+            {managementListError ? (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorText}>{managementListError}</Text>
+              </View>
+            ) : null}
+
             {filteredAssignmentItems.map((item) => {
               const tone = getStatusTone(item.status);
               const availableGroupQuantity =
-                item.status === 'unassigned'
-                  ? inventoryItems.filter(
-                      (inventoryItem) =>
-                        inventoryItem.status === 'unassigned' &&
-                        inventoryItem.destinationId === item.destinationId &&
-                        inventoryItem.packId === item.packId
+                item.status === 'unallocated'
+                  ? managementItems.filter(
+                      (managementItem) =>
+                        managementItem.status === 'unallocated' &&
+                        managementItem.destinationName === item.destinationName &&
+                        managementItem.catalogId === item.catalogId
                     ).length
                   : 1;
 
@@ -864,7 +920,7 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                         {item.destinationFlag} {item.destinationName} • {item.packName}
                       </Text>
                       <Text style={styles.assignmentMeta}>
-                        {item.email ?? item.phone ?? 'No user assigned'}
+                        {item.receiverUserId ?? 'No user assigned'}
                       </Text>
                     </View>
                     <View style={[styles.statusChip, { backgroundColor: tone.backgroundColor }]}>
@@ -873,9 +929,9 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                   </View>
                   <Text style={styles.assignmentTime}>
                     Created {new Date(item.createdAt).toLocaleString()}
-                    {item.assignedAt ? ` • Updated ${new Date(item.assignedAt).toLocaleString()}` : ''}
+                    {item.updatedAt ? ` • Updated ${new Date(item.updatedAt).toLocaleString()}` : ''}
                   </Text>
-                  {item.status === 'unassigned' ? (
+                  {item.status === 'unallocated' ? (
                     <Text style={styles.assignmentQuantityHint}>{availableGroupQuantity} ready in this pack group</Text>
                   ) : null}
                   <Pressable onPress={() => openManagementSheet(item)} style={styles.inlineAction}>
@@ -884,6 +940,13 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                 </View>
               );
             })}
+
+            {!isLoadingManagement && !managementListError && !filteredAssignmentItems.length ? (
+              <View style={styles.emptyState}>
+                <Text style={styles.emptyTitle}>No packs found</Text>
+                <Text style={styles.emptyBody}>Try another filter or search by receiver ID.</Text>
+              </View>
+            ) : null}
           </View>
         </ScrollView>
       )}
@@ -1055,7 +1118,10 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
       </BottomSheetModal>
 
       <BottomSheetModal
-        onClose={() => setManagementDraft(null)}
+        onClose={() => {
+          setManagementDraft(null);
+          setManagementSubmitError('');
+        }}
         subtitle={
           managementDraft
             ? `${managementDraft.item.destinationFlag} ${managementDraft.item.destinationName} • ${managementDraft.item.packName}`
@@ -1121,7 +1187,7 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                         ? {
                             ...current,
                             quantity: Math.min(
-                              current.item.status === 'unassigned' ? managementAvailableQuantity : 1,
+                              current.item.status === 'unallocated' ? managementAvailableQuantity : 1,
                               current.quantity + 1
                             ),
                           }
@@ -1130,11 +1196,11 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                   }
                   style={[
                     styles.stepperButton,
-                    managementDraft.item.status !== 'unassigned' && styles.stepperButtonDisabled,
+                    managementDraft.item.status !== 'unallocated' && styles.stepperButtonDisabled,
                   ]}
                 >
                   <Ionicons
-                    color={managementDraft.item.status !== 'unassigned' ? colors.textSoft : colors.primaryStrong}
+                    color={managementDraft.item.status !== 'unallocated' ? colors.textSoft : colors.primaryStrong}
                     name="add"
                     size={14}
                   />
@@ -1142,15 +1208,15 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
               </View>
             </View>
 
-            {managementError ? (
+            {managementError || managementSubmitError ? (
               <View style={styles.errorCard}>
-                <Text style={styles.errorText}>{managementError}</Text>
+                <Text style={styles.errorText}>{managementError || managementSubmitError}</Text>
               </View>
             ) : null}
 
             <PrimaryButton
-              disabled={Boolean(managementError)}
-              label={managementDraft.item.status === 'unassigned' ? 'Assign packs' : 'Save update'}
+              disabled={Boolean(managementError) || isSubmittingManagement}
+              label={managementDraft.item.status === 'unallocated' ? 'Assign packs' : 'Save update'}
               onPress={submitManagementAction}
             />
           </View>
@@ -1403,6 +1469,19 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontFamily: typography.body,
     color: colors.danger,
+  },
+  loadingPanel: {
+    borderRadius: 20,
+    backgroundColor: colors.surface,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  loadingText: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.textMuted,
   },
   searchField: {
     flexDirection: 'row',

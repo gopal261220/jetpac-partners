@@ -20,7 +20,7 @@ import type {
 } from '../types';
 
 const INITIAL_WALLET_BALANCE_USD = 428.5;
-const ESIM_UNIT_PRICE_USD = 2.5;
+const ESIM_UNIT_PRICE_USD = 1;
 
 const INITIAL_INVENTORY: InventoryItem[] = [
   {

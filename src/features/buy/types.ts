@@ -10,6 +10,7 @@ export type DataPack = {
 
 export type DestinationCatalog = {
   id: string;
+  apiName?: string;
   name: string;
   flag: string;
   region: string;

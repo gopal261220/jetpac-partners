@@ -1,4 +1,4 @@
-import type { PropsWithChildren } from 'react';
+import type { PropsWithChildren, ReactNode } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -11,6 +11,7 @@ type BottomSheetModalProps = PropsWithChildren<{
   subtitle?: string;
   onClose: () => void;
   onBack?: () => void;
+  footer?: ReactNode;
 }>;
 
 export function BottomSheetModal({
@@ -20,6 +21,7 @@ export function BottomSheetModal({
   subtitle,
   title,
   visible,
+  footer,
 }: BottomSheetModalProps) {
   return (
     <Modal animationType="slide" statusBarTranslucent transparent visible={visible}>
@@ -46,13 +48,14 @@ export function BottomSheetModal({
             </View>
             <ScrollView
               bounces={false}
-              contentContainerStyle={styles.bodyContent}
+              contentContainerStyle={[styles.bodyContent, footer ? styles.bodyContentWithFooter : null]}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
               style={styles.body}
             >
               {children}
             </ScrollView>
+            {footer ? <View style={styles.footer}>{footer}</View> : null}
           </View>
         </SafeAreaView>
       </View>
@@ -147,5 +150,16 @@ const styles = StyleSheet.create({
   bodyContent: {
     gap: 16,
     paddingBottom: 20,
+  },
+  bodyContentWithFooter: {
+    paddingBottom: 8,
+  },
+  footer: {
+    gap: 10,
+    paddingTop: 10,
+    paddingBottom: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
   },
 });

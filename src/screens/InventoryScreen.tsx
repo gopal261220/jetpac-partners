@@ -1,13 +1,20 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 
 import { BottomSheetModal } from '../components/BottomSheetModal';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { ScreenContainer } from '../components/ScreenContainer';
+import { assignPackOrders } from '../features/buy/api/assign';
+import { fetchDestinationCatalog } from '../features/buy/api/destinations';
+import { fetchEsimInventory, type EsimInventoryFilter, type EsimInventoryItem } from '../features/buy/api/esimInventory';
+import { orderEsims } from '../features/buy/api/esims';
+import { fetchDestinationPacks } from '../features/buy/api/packs';
 import { useBuyFlow } from '../features/buy/context/BuyFlowContext';
 import { destinationCatalog } from '../features/buy/data/catalog';
-import type { RequestedPack, StockGroup } from '../features/buy/types';
+import type { DestinationCatalog, StockGroup } from '../features/buy/types';
+import { fetchWalletScreenData } from '../features/wallet/api/wallet';
 import type { AppTabScreenProps } from '../navigation/types';
 import { colors } from '../theme/colors';
 import { typography } from '../theme/typography';
@@ -16,11 +23,7 @@ type InventoryTab = 'packs' | 'esims';
 type PackFlowStep = 'destination' | 'packs' | 'allocation' | null;
 
 type PurchaseRecipientDraft = {
-  id: string;
   email: string;
-  phone: string;
-  quantities: Record<string, number>;
-  isExpanded: boolean;
 };
 
 type FlowResultState = {
@@ -42,41 +45,59 @@ function getRelativeTimeLabel(isoDate: string) {
 
 function createRecipient(seed = Date.now()): PurchaseRecipientDraft {
   return {
-    id: `recipient-${seed}`,
     email: '',
-    phone: '',
-    quantities: {},
-    isExpanded: true,
   };
 }
 
-function recipientHasIdentity(recipient: { email: string; phone: string }) {
-  return Boolean(recipient.email.trim() || recipient.phone.trim());
+function getEsimStatusTone(status: string) {
+  const normalizedStatus = status.toLowerCase();
+
+  if (normalizedStatus === 'active' || normalizedStatus === 'installed') {
+    return {
+      chip: styles.allocatedChip,
+      text: styles.allocatedChipText,
+    };
+  }
+
+  return {
+    chip: styles.availableChip,
+    text: styles.availableChipText,
+  };
 }
 
 export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Inventory'>) {
   const {
-    buildAllocationPreview,
     buyRequestedPacksToInventory,
-    esimInventoryBatches,
+    completePurchase,
     inventoryItems,
-    purchaseEsimsToInventory,
     stockGroups,
-    submitAllocationPlan,
-    totalEsimInventory,
-    walletBalanceUsd,
   } = useBuyFlow();
 
   const [activeTab, setActiveTab] = useState<InventoryTab>(route.params?.initialTab ?? 'packs');
   const [packQuery, setPackQuery] = useState('');
   const [destinationQuery, setDestinationQuery] = useState('');
+  const [availableDestinations, setAvailableDestinations] = useState<DestinationCatalog[]>(destinationCatalog);
+  const [isLoadingDestinations, setIsLoadingDestinations] = useState(false);
+  const [destinationsError, setDestinationsError] = useState<string | null>(null);
+  const [isLoadingPacks, setIsLoadingPacks] = useState(false);
+  const [packsError, setPacksError] = useState<string | null>(null);
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
   const [packSelections, setPackSelections] = useState<Record<string, number>>({});
-  const [purchaseRecipients, setPurchaseRecipients] = useState<PurchaseRecipientDraft[]>([createRecipient()]);
-  const [esimQuantity, setEsimQuantity] = useState(10);
+  const [purchaseRecipient, setPurchaseRecipient] = useState<PurchaseRecipientDraft>(createRecipient());
+  const [esimQuantityInput, setEsimQuantityInput] = useState('10');
   const [resultState, setResultState] = useState<FlowResultState | null>(null);
   const [packFlowStep, setPackFlowStep] = useState<PackFlowStep>(null);
   const [showEsimSheet, setShowEsimSheet] = useState(false);
+  const [isSubmittingPackPurchase, setIsSubmittingPackPurchase] = useState(false);
+  const [purchaseSubmitError, setPurchaseSubmitError] = useState<string | null>(null);
+  const [isSubmittingEsimPurchase, setIsSubmittingEsimPurchase] = useState(false);
+  const [esimSubmitError, setEsimSubmitError] = useState<string | null>(null);
+  const [esimFilter, setEsimFilter] = useState<EsimInventoryFilter>('all');
+  const [esimInventoryItems, setEsimInventoryItems] = useState<EsimInventoryItem[]>([]);
+  const [allEsimInventoryItems, setAllEsimInventoryItems] = useState<EsimInventoryItem[]>([]);
+  const [isLoadingEsimInventory, setIsLoadingEsimInventory] = useState(false);
+  const [esimInventoryError, setEsimInventoryError] = useState<string | null>(null);
+  const [liveWalletBalanceUsd, setLiveWalletBalanceUsd] = useState<number | null>(null);
 
   useEffect(() => {
     if (route.params?.initialTab) {
@@ -101,18 +122,106 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
     navigation.setParams({ openPurchase: undefined });
   }, [navigation, route.params?.openPurchase]);
 
+  useFocusEffect(
+    useCallback(() => {
+      let isCancelled = false;
+
+      async function loadWalletSummary() {
+        try {
+          const response = await fetchWalletScreenData(1);
+
+          if (!isCancelled) {
+            setLiveWalletBalanceUsd(response.wallet.availableBalance);
+          }
+        } catch {
+          if (!isCancelled) {
+            setLiveWalletBalanceUsd(null);
+          }
+        }
+      }
+
+      void loadWalletSummary();
+
+      return () => {
+        isCancelled = true;
+      };
+    }, [])
+  );
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadDestinations() {
+      setIsLoadingDestinations(true);
+      setDestinationsError(null);
+
+      try {
+        const nextDestinations = await fetchDestinationCatalog();
+
+        if (!isCancelled) {
+          setAvailableDestinations(nextDestinations);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setDestinationsError(error instanceof Error ? error.message : 'Could not load destinations right now.');
+          setAvailableDestinations(destinationCatalog);
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingDestinations(false);
+        }
+      }
+    }
+
+    void loadDestinations();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const refreshEsimInventoryData = useCallback(
+    async (nextFilter = esimFilter) => {
+      setIsLoadingEsimInventory(true);
+      setEsimInventoryError(null);
+
+      try {
+        const [nextItems, allItems] = await Promise.all([
+          fetchEsimInventory(nextFilter),
+          fetchEsimInventory('all'),
+        ]);
+
+        setEsimInventoryItems(nextItems);
+        setAllEsimInventoryItems(allItems);
+      } catch (error) {
+        setEsimInventoryError(error instanceof Error ? error.message : 'Could not load eSIM inventory.');
+      } finally {
+        setIsLoadingEsimInventory(false);
+      }
+    },
+    [esimFilter]
+  );
+
+  useEffect(() => {
+    if (activeTab !== 'esims') {
+      return;
+    }
+
+    void refreshEsimInventoryData();
+  }, [activeTab, refreshEsimInventoryData]);
+
   const filteredDestinations = useMemo(() => {
     const normalizedQuery = destinationQuery.trim().toLowerCase();
 
-    return destinationCatalog.filter((destination) => {
+    return availableDestinations.filter((destination) => {
       const haystack = `${destination.name} ${destination.region} ${destination.category}`.toLowerCase();
       return !normalizedQuery || haystack.includes(normalizedQuery);
     });
-  }, [destinationQuery]);
+  }, [availableDestinations, destinationQuery]);
 
   const selectedDestination = useMemo(
-    () => destinationCatalog.find((destination) => destination.id === selectedDestinationId) ?? null,
-    [selectedDestinationId]
+    () => availableDestinations.find((destination) => destination.id === selectedDestinationId) ?? null,
+    [availableDestinations, selectedDestinationId]
   );
 
   const selectedPurchasePacks = useMemo(() => {
@@ -147,96 +256,53 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
   const recentPackActivity = useMemo(() => inventoryItems.slice(0, 6), [inventoryItems]);
 
-  const allocationPreview = useMemo(() => {
-    return buildAllocationPreview(
-      purchaseRecipients.map((recipient) => ({
-        id: recipient.id,
-        email: recipient.email,
-        phone: recipient.phone,
-        requestedPacks: selectedPurchasePacks.reduce<RequestedPack[]>((accumulator, pack) => {
-          const quantity = recipient.quantities[pack.packId] ?? 0;
-
-          if (quantity > 0) {
-            accumulator.push({ ...pack, quantity });
-          }
-
-          return accumulator;
-        }, []),
-      }))
-    );
-  }, [buildAllocationPreview, purchaseRecipients, selectedPurchasePacks]);
-
-  const allocationValidationErrors = useMemo(() => {
-    const errors: string[] = [];
-    const totalSelectedByPack = selectedPurchasePacks.reduce<Record<string, number>>((accumulator, pack) => {
-      accumulator[pack.packId] = pack.quantity;
-      return accumulator;
-    }, {});
-    const allocatedByPack = purchaseRecipients.reduce<Record<string, number>>((accumulator, recipient) => {
-      Object.entries(recipient.quantities).forEach(([packId, quantity]) => {
-        accumulator[packId] = (accumulator[packId] ?? 0) + quantity;
-      });
-
-      return accumulator;
-    }, {});
-
-    let actionableRecipients = 0;
-
-    purchaseRecipients.forEach((recipient, index) => {
-      const requestedCount = Object.values(recipient.quantities).reduce((sum, quantity) => sum + quantity, 0);
-
-      if (requestedCount > 0 && !recipientHasIdentity(recipient)) {
-        errors.push(`Recipient ${index + 1} needs an email or phone number.`);
-      }
-
-      if (recipientHasIdentity(recipient) && requestedCount === 0) {
-        errors.push(`Recipient ${index + 1} needs at least one pack selected.`);
-      }
-
-      if (recipientHasIdentity(recipient) && requestedCount > 0) {
-        actionableRecipients += 1;
-      }
-    });
-
-    selectedPurchasePacks.forEach((pack) => {
-      const allocated = allocatedByPack[pack.packId] ?? 0;
-
-      if (allocated !== totalSelectedByPack[pack.packId]) {
-        errors.push(`Allocate all ${pack.packName} units before completing purchase.`);
-      }
-    });
-
-    if (!actionableRecipients) {
-      errors.push('Add at least one user to allocate these packs.');
-    }
-
-    if (allocationPreview?.hasInsufficientBalance) {
-      errors.push('Wallet balance is too low for this purchase.');
-    }
-
-    return errors;
-  }, [allocationPreview, purchaseRecipients, selectedPurchasePacks]);
-
   const totalPackTopUpCost = useMemo(
     () => selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity * pack.priceUsd, 0),
     [selectedPurchasePacks]
   );
 
-  const hasPackTopUpBalanceIssue = walletBalanceUsd < totalPackTopUpCost;
-  const esimTotalCost = esimQuantity * 2.5;
-  const hasEsimBalanceIssue = walletBalanceUsd < esimTotalCost;
+  const effectiveWalletBalanceUsd = liveWalletBalanceUsd ?? 0;
+  const hasPackTopUpBalanceIssue = effectiveWalletBalanceUsd < totalPackTopUpCost;
+  const esimQuantity = useMemo(() => {
+    const parsedQuantity = Number.parseInt(esimQuantityInput, 10);
+
+    if (Number.isNaN(parsedQuantity)) {
+      return 0;
+    }
+
+    return Math.max(0, parsedQuantity);
+  }, [esimQuantityInput]);
+  const esimTotalCost = esimQuantity * 1;
+  const hasEsimBalanceIssue = esimQuantity > 0 && effectiveWalletBalanceUsd < esimTotalCost;
+  const totalEsimInventory = allEsimInventoryItems.length;
+
+  async function refreshWalletSummary() {
+    try {
+      const response = await fetchWalletScreenData(1);
+      setLiveWalletBalanceUsd(response.wallet.availableBalance);
+    } catch {
+      setLiveWalletBalanceUsd(null);
+    }
+  }
 
   function closeAllPurchaseModals() {
     resetPackFlow();
     setShowEsimSheet(false);
+    setEsimSubmitError(null);
+    setIsSubmittingEsimPurchase(false);
+    setEsimQuantityInput('10');
   }
 
   function resetPackFlow() {
     setSelectedDestinationId(null);
     setPackSelections({});
-    setPurchaseRecipients([createRecipient()]);
+    setPurchaseRecipient(createRecipient());
     setPackFlowStep(null);
     setDestinationQuery('');
+    setPacksError(null);
+    setIsLoadingPacks(false);
+    setPurchaseSubmitError(null);
+    setIsSubmittingPackPurchase(false);
   }
 
   function openPackPurchase() {
@@ -244,18 +310,65 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
     setPackFlowStep('destination');
   }
 
+  async function retryLoadDestinations() {
+    setIsLoadingDestinations(true);
+    setDestinationsError(null);
+
+    try {
+      const nextDestinations = await fetchDestinationCatalog();
+      setAvailableDestinations(nextDestinations);
+    } catch (error) {
+      setDestinationsError(error instanceof Error ? error.message : 'Could not load destinations right now.');
+      setAvailableDestinations(destinationCatalog);
+    } finally {
+      setIsLoadingDestinations(false);
+    }
+  }
+
   function prefillPackPurchase(group: StockGroup) {
     setSelectedDestinationId(group.destinationId);
     setPackSelections({ [group.packId]: 1 });
-    setPurchaseRecipients([createRecipient()]);
+    setPurchaseRecipient(createRecipient());
     setPackFlowStep('packs');
+    setPacksError(null);
   }
 
-  function selectDestination(destinationId: string) {
+  async function loadPacksForDestination(destination: DestinationCatalog) {
+    setIsLoadingPacks(true);
+    setPacksError(null);
+
+    try {
+      const packs = await fetchDestinationPacks(destination.apiName ?? destination.id);
+
+      setAvailableDestinations((current) =>
+        current.map((item) => (item.id === destination.id ? { ...item, packs: packs.length ? packs : item.packs } : item))
+      );
+    } catch (error) {
+      setPacksError(error instanceof Error ? error.message : 'Could not load packs right now.');
+    } finally {
+      setIsLoadingPacks(false);
+    }
+  }
+
+  async function selectDestination(destinationId: string) {
+    const destination = availableDestinations.find((item) => item.id === destinationId) ?? null;
+
     setSelectedDestinationId(destinationId);
     setPackSelections({});
-    setPurchaseRecipients([createRecipient()]);
+    setPurchaseRecipient(createRecipient());
     setPackFlowStep('packs');
+
+    if (destination) {
+      await loadPacksForDestination(destination);
+    }
+  }
+
+  async function retryLoadPacks() {
+    if (!selectedDestination) {
+      return;
+    }
+
+    await loadPacksForDestination(selectedDestination);
   }
 
   function updatePackSelection(packId: string, nextQuantity: number) {
@@ -272,111 +385,121 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
     });
   }
 
-  function addAllocationRecipient() {
-    setPurchaseRecipients((current) => [...current, createRecipient(Date.now() + current.length)]);
+  function updatePurchaseRecipientEmail(value: string) {
+    setPurchaseRecipient({ email: value });
   }
 
-  function removeAllocationRecipient(recipientId: string) {
-    setPurchaseRecipients((current) =>
-      current.length === 1 ? current : current.filter((recipient) => recipient.id !== recipientId)
-    );
-  }
+  async function syncPackAssignments(receiverUserId?: string) {
+    const requests = selectedPurchasePacks.flatMap((pack) => {
+      const catalogId = pack.packId;
 
-  function updateAllocationRecipientField(recipientId: string, field: 'email' | 'phone', value: string) {
-    setPurchaseRecipients((current) =>
-      current.map((recipient) =>
-        recipient.id === recipientId ? { ...recipient, [field]: value } : recipient
-      )
-    );
-  }
+      if (!catalogId) {
+        return [];
+      }
 
-  function updateAllocationQuantity(recipientId: string, packId: string, nextQuantity: number) {
-    setPurchaseRecipients((current) =>
-      current.map((recipient) => {
-        if (recipient.id !== recipientId) {
-          return recipient;
-        }
+      return Array.from({ length: pack.quantity }, () => ({
+        catalogId,
+        receiverUserId,
+      }));
+    });
 
-        const nextQuantities = { ...recipient.quantities };
-
-        if (nextQuantity <= 0) {
-          delete nextQuantities[packId];
-        } else {
-          nextQuantities[packId] = nextQuantity;
-        }
-
-        return { ...recipient, quantities: nextQuantities };
-      })
-    );
-  }
-
-  function toggleAllocationRecipient(recipientId: string) {
-    setPurchaseRecipients((current) =>
-      current.map((recipient) =>
-        recipient.id === recipientId ? { ...recipient, isExpanded: !recipient.isExpanded } : recipient
-      )
-    );
-  }
-
-  function buySelectedPacksToInventory() {
-    const result = buyRequestedPacksToInventory(selectedPurchasePacks);
-
-    if (!result) {
+    if (!requests.length) {
       return;
     }
 
-    setResultState({
-      title: 'Pack inventory updated',
-      body: `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory.`,
-      accent: colors.primaryStrong,
-    });
-    resetPackFlow();
+    await assignPackOrders(requests);
   }
 
-  function buyAndAllocateSelectedPacks() {
-    const recipients = purchaseRecipients.map((recipient) => ({
-      id: recipient.id,
-      email: recipient.email,
-      phone: recipient.phone,
-      requestedPacks: selectedPurchasePacks.reduce<RequestedPack[]>((accumulator, pack) => {
-        const quantity = recipient.quantities[pack.packId] ?? 0;
+  async function buySelectedPacksToInventory() {
+    setIsSubmittingPackPurchase(true);
+    setPurchaseSubmitError(null);
 
-        if (quantity > 0) {
-          accumulator.push({ ...pack, quantity });
-        }
+    try {
+      await syncPackAssignments();
 
-        return accumulator;
-      }, []),
-    }));
+      const result = buyRequestedPacksToInventory(selectedPurchasePacks);
 
-    const result = submitAllocationPlan(recipients);
+      if (!result) {
+        return;
+      }
 
-    if (!result) {
+      setResultState({
+        title: 'Pack inventory updated',
+        body: `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory.`,
+        accent: colors.primaryStrong,
+      });
+      await refreshWalletSummary();
+      resetPackFlow();
+    } catch (error) {
+      setPurchaseSubmitError(error instanceof Error ? error.message : 'Could not complete this purchase.');
+    } finally {
+      setIsSubmittingPackPurchase(false);
+    }
+  }
+
+  async function buyAndAllocateSelectedPacks() {
+    if (!selectedDestination) {
       return;
     }
 
-    setResultState({
-      title: 'Purchase and allocation complete',
-      body: `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} handled across ${result.assignedCount + result.pendingCount + result.failedCount} assignment flow${result.assignedCount + result.pendingCount + result.failedCount === 1 ? '' : 's'}.`,
-      accent: colors.primaryStrong,
-    });
-    resetPackFlow();
+    setIsSubmittingPackPurchase(true);
+    setPurchaseSubmitError(null);
+
+    try {
+      const receiverUserId = purchaseRecipient.email.trim() || undefined;
+
+      await syncPackAssignments(receiverUserId);
+
+      const result = completePurchase(selectedDestination, packSelections, {
+        email: receiverUserId ?? '',
+        phone: '',
+      });
+
+      if (!result) {
+        return;
+      }
+
+      setResultState({
+        title: receiverUserId ? 'Purchase and assignment complete' : 'Purchase complete',
+        body: receiverUserId
+          ? `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} assigned to ${receiverUserId}.`
+          : `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory without assignment.`,
+        accent: colors.primaryStrong,
+      });
+      await refreshWalletSummary();
+      resetPackFlow();
+    } catch (error) {
+      setPurchaseSubmitError(error instanceof Error ? error.message : 'Could not complete this purchase.');
+    } finally {
+      setIsSubmittingPackPurchase(false);
+    }
   }
 
-  function buyEsims() {
-    const batch = purchaseEsimsToInventory(esimQuantity);
-
-    if (!batch) {
+  async function buyEsims() {
+    if (esimQuantity < 1) {
+      setEsimSubmitError('Enter a valid eSIM quantity.');
       return;
     }
 
-    setResultState({
-      title: 'eSIM inventory updated',
-      body: `${batch.quantity} eSIM unit${batch.quantity === 1 ? '' : 's'} added to bulk inventory.`,
-      accent: colors.primaryStrong,
-    });
-    setShowEsimSheet(false);
-    setEsimQuantity(10);
+    setIsSubmittingEsimPurchase(true);
+    setEsimSubmitError(null);
+
+    try {
+      await orderEsims(esimQuantity);
+      await Promise.all([refreshWalletSummary(), refreshEsimInventoryData()]);
+
+      setResultState({
+        title: 'eSIM inventory updated',
+        body: `${esimQuantity} eSIM unit${esimQuantity === 1 ? '' : 's'} added to bulk inventory.`,
+        accent: colors.primaryStrong,
+      });
+      setShowEsimSheet(false);
+      setEsimQuantityInput('10');
+    } catch (error) {
+      setEsimSubmitError(error instanceof Error ? error.message : 'Could not place this eSIM order.');
+    } finally {
+      setIsSubmittingEsimPurchase(false);
+    }
   }
 
   return (
@@ -491,23 +614,139 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
             </View>
 
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Recent eSIM top-ups</Text>
-              {esimInventoryBatches.map((batch) => (
-                <View key={batch.id} style={styles.logCard}>
-                  <Text style={styles.logTitle}>
-                    {batch.quantity} eSIM unit{batch.quantity === 1 ? '' : 's'}
-                  </Text>
-                  <Text style={styles.logMeta}>
-                    ${batch.unitPriceUsd.toFixed(2)} each • {getRelativeTimeLabel(batch.createdAt)}
-                  </Text>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>eSIM history</Text>
+              </View>
+
+              <View style={styles.filterRail}>
+                {(['all', 'active', 'released', 'installed'] as EsimInventoryFilter[]).map((filter) => {
+                  const isActive = filter === esimFilter;
+
+                  return (
+                    <Pressable
+                      key={filter}
+                      onPress={() => setEsimFilter(filter)}
+                      style={[styles.filterChip, isActive && styles.filterChipActive]}
+                    >
+                      <Text style={[styles.filterChipText, isActive && styles.filterChipTextActive]}>
+                        {filter}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {isLoadingEsimInventory ? (
+                <View style={styles.loadingPanel}>
+                  <ActivityIndicator color={colors.primaryStrong} size="small" />
+                  <Text style={styles.loadingText}>Loading eSIM inventory</Text>
                 </View>
-              ))}
+              ) : esimInventoryError ? (
+                <View style={styles.warningCard}>
+                  <Text style={styles.warningBody}>{esimInventoryError}</Text>
+                </View>
+              ) : esimInventoryItems.length ? (
+                esimInventoryItems.map((item) => {
+                  const tone = getEsimStatusTone(item.status);
+
+                  return (
+                    <View key={item.id} style={styles.logCard}>
+                      <View style={styles.logTopRow}>
+                        <Text style={styles.logTitle}>{item.iccid}</Text>
+                        <View style={[styles.statusChip, tone.chip]}>
+                          <Text style={[styles.statusChipText, tone.text]}>
+                            {item.status.toLowerCase()}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={styles.logMeta}>
+                        {item.userEmail ?? item.userId ?? 'Unassigned'} • {getRelativeTimeLabel(item.updatedAt)}
+                      </Text>
+                    </View>
+                  );
+                })
+              ) : (
+                <View style={styles.emptyStateCard}>
+                  <Text style={styles.emptyStateTitle}>No eSIM records found</Text>
+                  <Text style={styles.emptyStateBody}>Try another filter or purchase more eSIM inventory.</Text>
+                </View>
+              )}
             </View>
           </>
         )}
       </ScrollView>
 
       <BottomSheetModal
+        footer={
+          packFlowStep === 'packs' ? (
+            <>
+              <View style={styles.stickySummaryCard}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Selected packs</Text>
+                  <Text style={styles.summaryValue}>
+                    {selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0)}
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Inventory top-up cost</Text>
+                  <Text style={styles.summaryValue}>${totalPackTopUpCost.toFixed(2)}</Text>
+                </View>
+                <Text style={styles.balanceHint}>Wallet balance ${effectiveWalletBalanceUsd.toFixed(2)}</Text>
+              </View>
+              <PrimaryButton
+                disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue || isLoadingPacks}
+                label="Continue to allocation"
+                onPress={() => setPackFlowStep('allocation')}
+              />
+              <PrimaryButton
+                disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue || isLoadingPacks || isSubmittingPackPurchase}
+                label={isSubmittingPackPurchase ? 'Buying...' : 'Buy for inventory'}
+                onPress={buySelectedPacksToInventory}
+                variant="secondary"
+              />
+            </>
+          ) : packFlowStep === 'allocation' ? (
+            <>
+              <View style={styles.stickySummaryCard}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Selected units</Text>
+                  <Text style={styles.summaryValue}>
+                    {selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0)} packs
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Buying now</Text>
+                  <Text style={styles.summaryValue}>
+                    {selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0)} packs
+                  </Text>
+                </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Wallet deduction</Text>
+                <Text style={styles.summaryValue}>${totalPackTopUpCost.toFixed(2)}</Text>
+              </View>
+              <Text style={styles.balanceHint}>Wallet balance ${effectiveWalletBalanceUsd.toFixed(2)}</Text>
+            </View>
+              <PrimaryButton
+                disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue || isSubmittingPackPurchase}
+                label={
+                  isSubmittingPackPurchase
+                    ? 'Processing...'
+                    : purchaseRecipient.email.trim()
+                      ? 'Purchase and assign'
+                      : 'Buy without assignment'
+                }
+                onPress={buyAndAllocateSelectedPacks}
+              />
+              {hasPackTopUpBalanceIssue ? (
+                <PrimaryButton
+                  label="Go to Wallet"
+                  onPress={() => navigation.navigate('Wallet')}
+                  variant="secondary"
+                />
+              ) : null}
+            </>
+          ) : undefined
+        }
         onBack={
           packFlowStep === 'packs'
             ? () => setPackFlowStep('destination')
@@ -547,6 +786,37 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
               />
             </View>
 
+            {isLoadingDestinations ? (
+              <View style={styles.emptyStateCard}>
+                <View style={styles.loadingStateRow}>
+                  <ActivityIndicator color={colors.primaryStrong} size="small" />
+                  <View style={styles.loadingStateCopy}>
+                    <Text style={styles.emptyStateTitle}>Refreshing destinations</Text>
+                    <Text style={styles.emptyStateBody}>
+                      You can keep using the current list while we fetch the latest destinations.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
+            {destinationsError ? (
+              <View style={styles.warningCard}>
+                <Text style={styles.warningTitle}>Could not refresh destinations</Text>
+                <Text style={styles.warningBody}>{destinationsError}</Text>
+                <Pressable onPress={() => void retryLoadDestinations()} style={styles.inlineAction}>
+                  <Text style={styles.inlineActionText}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {!filteredDestinations.length ? (
+              <View style={styles.emptyStateCard}>
+                <Text style={styles.emptyStateTitle}>No destinations found</Text>
+                <Text style={styles.emptyStateBody}>Try another destination name or keyword.</Text>
+              </View>
+            ) : null}
+
             {filteredDestinations.map((destination) => (
               <Pressable
                 key={destination.id}
@@ -569,6 +839,37 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
         {packFlowStep === 'packs' && selectedDestination ? (
           <View style={styles.sheetContent}>
+            {isLoadingPacks ? (
+              <View style={styles.emptyStateCard}>
+                <View style={styles.loadingStateRow}>
+                  <ActivityIndicator color={colors.primaryStrong} size="small" />
+                  <View style={styles.loadingStateCopy}>
+                    <Text style={styles.emptyStateTitle}>Loading packs</Text>
+                    <Text style={styles.emptyStateBody}>
+                      Fetching the latest packs for {selectedDestination.name}.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : null}
+
+            {packsError ? (
+              <View style={styles.warningCard}>
+                <Text style={styles.warningTitle}>Could not load packs</Text>
+                <Text style={styles.warningBody}>{packsError}</Text>
+                <Pressable onPress={() => void retryLoadPacks()} style={styles.inlineAction}>
+                  <Text style={styles.inlineActionText}>Retry</Text>
+                </Pressable>
+              </View>
+            ) : null}
+
+            {!isLoadingPacks && !selectedDestination.packs.length ? (
+              <View style={styles.emptyStateCard}>
+                <Text style={styles.emptyStateTitle}>No packs available</Text>
+                <Text style={styles.emptyStateBody}>This destination does not have any packs to show right now.</Text>
+              </View>
+            ) : null}
+
             {selectedDestination.packs.map((pack) => (
               <View key={pack.id} style={styles.packCard}>
                 <View style={styles.packCardCopy}>
@@ -595,20 +896,6 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
               </View>
             ))}
 
-            <View style={styles.summaryCard}>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Selected packs</Text>
-                <Text style={styles.summaryValue}>
-                  {selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0)}
-                </Text>
-              </View>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Inventory top-up cost</Text>
-                <Text style={styles.summaryValue}>${totalPackTopUpCost.toFixed(2)}</Text>
-              </View>
-              <Text style={styles.balanceHint}>Wallet balance ${walletBalanceUsd.toFixed(2)}</Text>
-            </View>
-
             {hasPackTopUpBalanceIssue && selectedPurchasePacks.length ? (
               <View style={styles.warningCard}>
                 <Text style={styles.warningTitle}>Low balance for this top-up</Text>
@@ -617,18 +904,6 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
                 </Text>
               </View>
             ) : null}
-
-            <PrimaryButton
-              disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue}
-              label="Continue to allocation"
-              onPress={() => setPackFlowStep('allocation')}
-            />
-            <PrimaryButton
-              disabled={!selectedPurchasePacks.length || hasPackTopUpBalanceIssue}
-              label="Buy for inventory"
-              onPress={buySelectedPacksToInventory}
-              variant="secondary"
-            />
           </View>
         ) : null}
 
@@ -643,181 +918,83 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
               </View>
             ))}
 
-            {purchaseRecipients.map((recipient, index) => (
-              <View key={recipient.id} style={styles.recipientCard}>
-                <View style={styles.recipientHeader}>
-                  <Text style={styles.recipientTitle}>Recipient {index + 1}</Text>
-                  <View style={styles.recipientActions}>
-                    <Pressable onPress={() => toggleAllocationRecipient(recipient.id)}>
-                      <Text style={styles.inlineActionText}>{recipient.isExpanded ? 'Hide' : 'View'}</Text>
-                    </Pressable>
-                    {purchaseRecipients.length > 1 ? (
-                      <Pressable onPress={() => removeAllocationRecipient(recipient.id)}>
-                        <Text style={styles.removeText}>Remove</Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                </View>
-
-                {!recipient.isExpanded ? (
-                  <Text style={styles.collapsedMeta}>
-                    {recipient.email || recipient.phone || 'No user details'} •{' '}
-                    {Object.values(recipient.quantities).reduce((sum, quantity) => sum + quantity, 0)} pack
-                    {Object.values(recipient.quantities).reduce((sum, quantity) => sum + quantity, 0) === 1 ? '' : 's'}
-                  </Text>
-                ) : (
-                  <>
-                    <TextInput
-                      autoCapitalize="none"
-                      keyboardType="email-address"
-                      onChangeText={(value) => updateAllocationRecipientField(recipient.id, 'email', value)}
-                      placeholder="Email"
-                      placeholderTextColor={colors.textSoft}
-                      style={styles.input}
-                      value={recipient.email}
-                    />
-                    <TextInput
-                      keyboardType="phone-pad"
-                      onChangeText={(value) => updateAllocationRecipientField(recipient.id, 'phone', value)}
-                      placeholder="Phone"
-                      placeholderTextColor={colors.textSoft}
-                      style={styles.input}
-                      value={recipient.phone}
-                    />
-
-                    {selectedPurchasePacks.map((pack) => {
-                      const allocatedToOthers = purchaseRecipients.reduce((sum, entry) => {
-                        if (entry.id === recipient.id) {
-                          return sum;
-                        }
-
-                        return sum + (entry.quantities[pack.packId] ?? 0);
-                      }, 0);
-                      const availableForRecipient = pack.quantity - allocatedToOthers;
-                      const currentQuantity = recipient.quantities[pack.packId] ?? 0;
-
-                      return (
-                        <View key={pack.packId} style={styles.packRow}>
-                          <View style={styles.packCopy}>
-                            <Text style={styles.packName}>{pack.packName}</Text>
-                            <Text style={styles.packMeta}>
-                              {pack.quantity} selected • {Math.max(0, availableForRecipient)} left
-                            </Text>
-                          </View>
-                          <View style={styles.stepper}>
-                            <Pressable
-                              onPress={() =>
-                                updateAllocationQuantity(recipient.id, pack.packId, Math.max(0, currentQuantity - 1))
-                              }
-                              style={styles.stepperButton}
-                            >
-                              <Ionicons color={colors.primaryStrong} name="remove" size={14} />
-                            </Pressable>
-                            <Text style={styles.stepperValue}>{currentQuantity}</Text>
-                            <Pressable
-                              onPress={() =>
-                                updateAllocationQuantity(
-                                  recipient.id,
-                                  pack.packId,
-                                  Math.min(pack.quantity, currentQuantity + 1)
-                                )
-                              }
-                              style={[
-                                styles.stepperButton,
-                                currentQuantity >= availableForRecipient && styles.stepperButtonDisabled,
-                              ]}
-                            >
-                              <Ionicons
-                                color={currentQuantity >= availableForRecipient ? colors.textSoft : colors.primaryStrong}
-                                name="add"
-                                size={14}
-                              />
-                            </Pressable>
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </>
-                )}
+            <View style={styles.recipientCard}>
+              <View style={styles.recipientHeader}>
+                <Text style={styles.recipientTitle}>Assign while purchasing</Text>
               </View>
-            ))}
-
-            <View style={styles.summaryCard}>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Using stock first</Text>
-                <Text style={styles.summaryValue}>{allocationPreview?.stockUnits ?? 0} packs</Text>
-              </View>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Buying now</Text>
-                <Text style={styles.summaryValue}>{allocationPreview?.purchaseUnits ?? 0} packs</Text>
-              </View>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Wallet deduction</Text>
-                <Text style={styles.summaryValue}>
-                  ${allocationPreview?.walletDeductionUsd.toFixed(2) ?? '0.00'}
-                </Text>
-              </View>
+              <Text style={styles.recipientHelper}>
+                Add one email to assign all selected packs immediately. Leave it blank to buy into inventory only.
+              </Text>
+              <TextInput
+                autoCapitalize="none"
+                keyboardType="email-address"
+                onChangeText={updatePurchaseRecipientEmail}
+                placeholder="Receiver email (optional)"
+                placeholderTextColor={colors.textSoft}
+                style={styles.input}
+                value={purchaseRecipient.email}
+              />
             </View>
 
-            {allocationValidationErrors.length ? (
+            {purchaseSubmitError ? (
               <View style={styles.warningCard}>
-                {allocationValidationErrors.map((error) => (
-                  <Text key={error} style={styles.warningBody}>
-                    {error}
-                  </Text>
-                ))}
+                <Text style={styles.warningBody}>{purchaseSubmitError}</Text>
               </View>
-            ) : null}
-
-            <PrimaryButton label="Add another user" onPress={addAllocationRecipient} variant="secondary" />
-            <PrimaryButton
-              disabled={Boolean(allocationValidationErrors.length)}
-              label="Purchase and allocate"
-              onPress={buyAndAllocateSelectedPacks}
-            />
-            {allocationPreview?.hasInsufficientBalance ? (
-              <PrimaryButton label="Go to Wallet" onPress={() => navigation.navigate('Wallet')} variant="secondary" />
             ) : null}
           </View>
         ) : null}
       </BottomSheetModal>
 
       <BottomSheetModal
+        footer={
+          <>
+            <View style={styles.stickySummaryCard}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>eSIM quantity</Text>
+                  <Text style={styles.summaryValue}>{esimQuantity || '--'}</Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Unit price</Text>
+                  <Text style={styles.summaryValue}>$1.00</Text>
+                </View>
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Purchase total</Text>
+                <Text style={styles.summaryValue}>${esimTotalCost.toFixed(2)}</Text>
+              </View>
+              <Text style={styles.balanceHint}>Wallet balance ${effectiveWalletBalanceUsd.toFixed(2)}</Text>
+            </View>
+            <PrimaryButton
+              disabled={hasEsimBalanceIssue || isSubmittingEsimPurchase}
+              label={isSubmittingEsimPurchase ? 'Purchasing...' : 'Purchase eSIM'}
+              onPress={buyEsims}
+            />
+            {hasEsimBalanceIssue ? (
+              <PrimaryButton label="Go to Wallet" onPress={() => navigation.navigate('Wallet')} variant="secondary" />
+            ) : null}
+          </>
+        }
         onClose={() => setShowEsimSheet(false)}
         subtitle="Buy bulk eSIM inventory with quantity only."
         title="Buy eSIM"
         visible={showEsimSheet}
       >
         <View style={styles.sheetContent}>
-          <View style={styles.summaryCard}>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>eSIM quantity</Text>
-              <Text style={styles.summaryValue}>{esimQuantity}</Text>
-            </View>
-            <View style={styles.stepperCentered}>
-              <Pressable
-                onPress={() => setEsimQuantity((current) => Math.max(1, current - 1))}
-                style={styles.stepperButton}
-              >
-                <Ionicons color={colors.primaryStrong} name="remove" size={16} />
-              </Pressable>
-              <Text style={styles.stepperLargeValue}>{esimQuantity}</Text>
-              <Pressable
-                onPress={() => setEsimQuantity((current) => current + 1)}
-                style={styles.stepperButton}
-              >
-                <Ionicons color={colors.primaryStrong} name="add" size={16} />
-              </Pressable>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Unit price</Text>
-              <Text style={styles.summaryValue}>$2.50</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Purchase total</Text>
-              <Text style={styles.summaryValue}>${esimTotalCost.toFixed(2)}</Text>
-            </View>
-            <Text style={styles.balanceHint}>Wallet balance ${walletBalanceUsd.toFixed(2)}</Text>
+          <View style={styles.esimInputCard}>
+            <Text style={styles.esimInputLabel}>Quantity</Text>
+            <Text style={styles.esimInputHelp}>
+              Enter the number of eSIMs you want to add to bulk inventory.
+            </Text>
+            <TextInput
+              keyboardType="number-pad"
+              onChangeText={(value) => {
+                const digitsOnly = value.replace(/[^0-9]/g, '');
+                setEsimQuantityInput(digitsOnly);
+              }}
+              placeholder="Enter quantity"
+              placeholderTextColor={colors.textSoft}
+              style={styles.esimQuantityInput}
+              value={esimQuantityInput}
+            />
           </View>
 
           {hasEsimBalanceIssue ? (
@@ -827,9 +1004,10 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
             </View>
           ) : null}
 
-          <PrimaryButton disabled={hasEsimBalanceIssue} label="Purchase eSIM" onPress={buyEsims} />
-          {hasEsimBalanceIssue ? (
-            <PrimaryButton label="Go to Wallet" onPress={() => navigation.navigate('Wallet')} variant="secondary" />
+          {esimSubmitError ? (
+            <View style={styles.warningCard}>
+              <Text style={styles.warningBody}>{esimSubmitError}</Text>
+            </View>
           ) : null}
         </View>
       </BottomSheetModal>
@@ -997,11 +1175,87 @@ const styles = StyleSheet.create({
     fontFamily: typography.heading,
     color: colors.primary,
   },
+  emptyStateCard: {
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    padding: 18,
+    gap: 6,
+  },
+  loadingStateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  loadingStateCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  emptyStateTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.text,
+  },
+  emptyStateBody: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  filterRail: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  filterChip: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.surface,
+  },
+  filterChipActive: {
+    backgroundColor: colors.primarySoft,
+  },
+  filterChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    textTransform: 'capitalize',
+    color: colors.textMuted,
+  },
+  filterChipTextActive: {
+    color: colors.primaryStrong,
+  },
+  loadingPanel: {
+    borderRadius: 22,
+    backgroundColor: colors.surface,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  loadingText: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
   logCard: {
     borderRadius: 22,
     backgroundColor: colors.surface,
     padding: 16,
     gap: 4,
+  },
+  logTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
   },
   logTitle: {
     fontSize: 14,
@@ -1013,6 +1267,29 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  statusChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  statusChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    textTransform: 'capitalize',
+  },
+  allocatedChip: {
+    backgroundColor: colors.primarySoft,
+  },
+  allocatedChipText: {
+    color: colors.primaryStrong,
+  },
+  availableChip: {
+    backgroundColor: colors.surfaceSoft,
+  },
+  availableChipText: {
     color: colors.textMuted,
   },
   esimSummaryCard: {
@@ -1051,6 +1328,36 @@ const styles = StyleSheet.create({
   },
   sheetContent: {
     gap: 14,
+  },
+  esimInputCard: {
+    borderRadius: 24,
+    backgroundColor: colors.surface,
+    padding: 18,
+    gap: 10,
+  },
+  esimInputLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.text,
+  },
+  esimInputHelp: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  esimQuantityInput: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 24,
+    fontFamily: typography.heading,
+    fontWeight: '700',
+    color: colors.text,
   },
   sheetCard: {
     borderRadius: 20,
@@ -1144,6 +1451,12 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 10,
   },
+  stickySummaryCard: {
+    borderRadius: 24,
+    backgroundColor: colors.surfaceMuted,
+    padding: 14,
+    gap: 10,
+  },
   summaryRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1218,6 +1531,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontFamily: typography.heading,
     color: colors.text,
+  },
+  recipientHelper: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: colors.textMuted,
   },
   recipientActions: {
     flexDirection: 'row',
