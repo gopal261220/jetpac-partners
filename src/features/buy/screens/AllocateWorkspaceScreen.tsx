@@ -9,19 +9,17 @@ import { ScreenContainer } from '../../../components/ScreenContainer';
 import type { AppTabScreenProps, AllocateWorkspaceScreenProps } from '../../../navigation/types';
 import { colors } from '../../../theme/colors';
 import { typography } from '../../../theme/typography';
+import { fetchWalletScreenData } from '../../wallet/api/wallet';
 import { assignPackOrders } from '../api/assign';
 import { fetchPackInventory, type PackInventoryItem, type PackInventoryStatusFilter } from '../api/packInventory';
-import { useBuyFlow } from '../context/BuyFlowContext';
-import { destinationCatalog } from '../data/catalog';
+import { fetchAllPacks, type CatalogPackOption } from '../api/packs';
 import type {
-  AllocationMode,
+  AllocationPreview,
   AllocationRecipientDraft,
   AllocationResult,
-  InventoryItem,
   InventoryStatus,
   RecipientDraft,
   RequestedPack,
-  StockGroup,
 } from '../types';
 
 type WorkspaceProps = AllocateWorkspaceScreenProps & {
@@ -34,24 +32,12 @@ type UserRecipientDraft = AllocationRecipientDraft & {
   isExpanded: boolean;
 };
 
-type PackRecipientDraft = {
-  id: string;
-  email: string;
-  phone: string;
-  quantity: number;
-};
-
 type ManagementDraft = {
   item: PackInventoryItem;
   email: string;
   phone: string;
   quantity: number;
 };
-
-const allocationModes: Array<{ key: AllocationMode; label: string }> = [
-  { key: 'user', label: 'By user' },
-  { key: 'pack', label: 'By pack' },
-];
 
 const assignmentFilters: PackInventoryStatusFilter[] = ['all', 'allocated', 'unallocated'];
 
@@ -67,15 +53,6 @@ function createUserRecipient(seed = Date.now()) {
     phone: '',
     requestedPacks: [],
     isExpanded: true,
-  };
-}
-
-function createPackRecipient(seed = Date.now()) {
-  return {
-    id: `pack-recipient-${seed}`,
-    email: '',
-    phone: '',
-    quantity: 1,
   };
 }
 
@@ -144,45 +121,100 @@ function recipientHasIdentity(recipient: RecipientDraft) {
   return Boolean(recipient.email.trim() || recipient.phone.trim());
 }
 
-function flattenCatalogPacks() {
-  return destinationCatalog.flatMap((destination) =>
-    destination.packs.map((pack) => ({
-      key: `${destination.id}:${pack.id}`,
-      destinationId: destination.id,
-      destinationName: destination.name,
-      destinationFlag: destination.flag,
-      packId: pack.id,
-      packName: pack.name,
-      dataAllowance: pack.dataAllowance,
-      validity: pack.validity,
-      priceUsd: pack.priceUsd,
-      region: destination.region,
-      category: destination.category,
-    }))
-  );
+function buildLiveAllocationPreview(
+  recipients: AllocationRecipientDraft[],
+  inventoryItems: PackInventoryItem[],
+  walletBalanceUsd: number
+): AllocationPreview | null {
+  const grouped = new Map<
+    string,
+    {
+      key: string;
+      destinationName: string;
+      destinationFlag: string;
+      packName: string;
+      quantity: number;
+      fromStockQuantity: number;
+      purchaseQuantity: number;
+      unitPriceUsd: number;
+      purchaseCostUsd: number;
+    }
+  >();
+
+  recipients.forEach((recipient) => {
+    recipient.requestedPacks.forEach((pack) => {
+      if (pack.quantity < 1) {
+        return;
+      }
+
+      const key = `${pack.destinationId}:${pack.packId}`;
+      const current = grouped.get(key);
+
+      if (current) {
+        current.quantity += pack.quantity;
+        return;
+      }
+
+      grouped.set(key, {
+        key,
+        destinationName: pack.destinationName,
+        destinationFlag: pack.destinationFlag,
+        packName: pack.packName,
+        quantity: pack.quantity,
+        fromStockQuantity: 0,
+        purchaseQuantity: 0,
+        unitPriceUsd: pack.priceUsd,
+        purchaseCostUsd: 0,
+      });
+    });
+  });
+
+  const lines = Array.from(grouped.values());
+
+  if (!lines.length) {
+    return null;
+  }
+
+  lines.forEach((line) => {
+    const availableQuantity = inventoryItems.filter(
+      (item) => item.status === 'unallocated' && `${item.destinationName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}:${item.catalogId}` === line.key
+    ).length;
+
+    line.fromStockQuantity = Math.min(availableQuantity, line.quantity);
+    line.purchaseQuantity = Math.max(0, line.quantity - line.fromStockQuantity);
+    line.purchaseCostUsd = line.purchaseQuantity * line.unitPriceUsd;
+  });
+
+  const totalUnits = lines.reduce((sum, line) => sum + line.quantity, 0);
+  const stockUnits = lines.reduce((sum, line) => sum + line.fromStockQuantity, 0);
+  const purchaseUnits = lines.reduce((sum, line) => sum + line.purchaseQuantity, 0);
+  const walletDeductionUsd = lines.reduce((sum, line) => sum + line.purchaseCostUsd, 0);
+
+  return {
+    lines,
+    totalUnits,
+    stockUnits,
+    purchaseUnits,
+    walletDeductionUsd,
+    walletBalanceBeforeUsd: walletBalanceUsd,
+    walletBalanceAfterUsd: walletBalanceUsd - walletDeductionUsd,
+    hasInsufficientBalance: walletBalanceUsd - walletDeductionUsd < 0,
+  };
 }
 
-const catalogPacks = flattenCatalogPacks();
-
 export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
-  const {
-    buildAllocationPreview,
-    inventoryItems,
-    stockGroups,
-    submitAllocationPlan,
-    walletBalanceUsd,
-  } = useBuyFlow();
-
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('allocate');
-  const [mode, setMode] = useState<AllocationMode>('user');
   const [userRecipients, setUserRecipients] = useState<UserRecipientDraft[]>([createUserRecipient()]);
   const [pickerQuery, setPickerQuery] = useState('');
   const [pickerRecipientId, setPickerRecipientId] = useState<string | null>(null);
-  const [packSearch, setPackSearch] = useState('');
-  const [selectedPackGroup, setSelectedPackGroup] = useState<StockGroup | null>(null);
-  const [packRecipients, setPackRecipients] = useState<PackRecipientDraft[]>([createPackRecipient()]);
+  const [isInventorySectionOpen, setIsInventorySectionOpen] = useState(true);
+  const [isCatalogSectionOpen, setIsCatalogSectionOpen] = useState(false);
+  const [catalogPackOptions, setCatalogPackOptions] = useState<CatalogPackOption[]>([]);
+  const [isLoadingCatalogPacks, setIsLoadingCatalogPacks] = useState(false);
+  const [catalogPackError, setCatalogPackError] = useState('');
   const [resultState, setResultState] = useState<AllocationResult | null>(null);
   const [allocationSubmitError, setAllocationSubmitError] = useState('');
+  const [isSubmittingAllocation, setIsSubmittingAllocation] = useState(false);
   const [assignmentQuery, setAssignmentQuery] = useState('');
   const [assignmentFilter, setAssignmentFilter] = useState<PackInventoryStatusFilter>('all');
   const [managementItems, setManagementItems] = useState<PackInventoryItem[]>([]);
@@ -191,10 +223,24 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   const [managementDraft, setManagementDraft] = useState<ManagementDraft | null>(null);
   const [managementSubmitError, setManagementSubmitError] = useState('');
   const [isSubmittingManagement, setIsSubmittingManagement] = useState(false);
+  const [walletBalanceUsd, setWalletBalanceUsd] = useState(0);
+  const [isLoadingWallet, setIsLoadingWallet] = useState(false);
 
   const deferredPickerQuery = useDeferredValue(pickerQuery.trim().toLowerCase());
-  const deferredPackSearch = useDeferredValue(packSearch.trim().toLowerCase());
   const deferredAssignmentQuery = useDeferredValue(assignmentQuery.trim().toLowerCase());
+
+  const refreshWalletBalance = useCallback(async () => {
+    setIsLoadingWallet(true);
+
+    try {
+      const response = await fetchWalletScreenData(1);
+      setWalletBalanceUsd(response.wallet.availableBalance);
+    } catch {
+      // Keep the last known balance on screen if the refresh fails.
+    } finally {
+      setIsLoadingWallet(false);
+    }
+  }, []);
 
   const refreshManagementItems = useCallback(async () => {
     setIsLoadingManagement(true);
@@ -220,27 +266,97 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshWalletBalance();
+
       if (workspaceView !== 'management') {
         return;
       }
 
       void refreshManagementItems();
-    }, [refreshManagementItems, workspaceView])
+    }, [refreshManagementItems, refreshWalletBalance, workspaceView])
   );
 
-  const filteredPickerPacks = useMemo(() => {
-    return catalogPacks.filter((pack) => {
-      const haystack = `${pack.destinationName} ${pack.packName} ${pack.region} ${pack.category}`.toLowerCase();
+  useEffect(() => {
+    if (!pickerRecipientId) {
+      return;
+    }
+
+    if (!managementItems.length) {
+      void fetchPackInventory('unallocated')
+        .then(setManagementItems)
+        .catch(() => undefined);
+    }
+
+    let isCancelled = false;
+
+    async function loadCatalogPacks() {
+      setIsLoadingCatalogPacks(true);
+      setCatalogPackError('');
+
+      try {
+        const nextPacks = await fetchAllPacks(30);
+
+        if (!isCancelled) {
+          setCatalogPackOptions(nextPacks);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setCatalogPackError(error instanceof Error ? error.message : 'Could not load packs.');
+        }
+      } finally {
+        if (!isCancelled) {
+          setIsLoadingCatalogPacks(false);
+        }
+      }
+    }
+
+    void loadCatalogPacks();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [pickerRecipientId]);
+
+  const inventoryPickerPacks = useMemo(() => {
+    const grouped = new Map<string, CatalogPackOption & { availableQuantity: number }>();
+
+    managementItems
+      .filter((item) => item.status === 'unallocated')
+      .forEach((item) => {
+        const key = `${item.destinationName}:${item.catalogId}`;
+        const current = grouped.get(key);
+
+        if (current) {
+          current.availableQuantity += 1;
+          return;
+        }
+
+        grouped.set(key, {
+          key,
+          destinationId: item.destinationName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+          destinationName: item.destinationName,
+          destinationFlag: item.destinationFlag,
+          packId: item.catalogId,
+          packName: item.packName,
+          dataAllowance: item.dataAllowance,
+          validity: item.validity,
+          priceUsd: item.priceUsd,
+          availableQuantity: 1,
+        });
+      });
+
+    return Array.from(grouped.values()).filter((pack) => {
+      const haystack = `${pack.destinationName} ${pack.packName} ${pack.dataAllowance} ${pack.validity}`.toLowerCase();
       return !deferredPickerQuery || haystack.includes(deferredPickerQuery);
     });
-  }, [deferredPickerQuery]);
+  }, [deferredPickerQuery, managementItems]);
 
-  const filteredStockGroups = useMemo(() => {
-    return stockGroups.filter((group) => {
-      const haystack = `${group.destinationName} ${group.packName} ${group.dataAllowance} ${group.validity}`.toLowerCase();
-      return !deferredPackSearch || haystack.includes(deferredPackSearch);
+  const filteredCatalogPacks = useMemo(() => {
+    return catalogPackOptions.filter((pack) => {
+      const haystack = `${pack.destinationName} ${pack.packName} ${pack.dataAllowance} ${pack.validity}`.toLowerCase();
+      return !deferredPickerQuery || haystack.includes(deferredPickerQuery);
     });
-  }, [deferredPackSearch, stockGroups]);
+  }, [catalogPackOptions, deferredPickerQuery]);
 
   const filteredAssignmentItems = useMemo(() => {
     return managementItems.filter((item) => {
@@ -252,8 +368,13 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   }, [deferredAssignmentQuery, managementItems]);
 
   const userPreview = useMemo(
-    () => buildAllocationPreview(userRecipients.map(({ isExpanded, ...recipient }) => recipient)),
-    [buildAllocationPreview, userRecipients]
+    () =>
+      buildLiveAllocationPreview(
+        userRecipients.map(({ isExpanded, ...recipient }) => recipient),
+        managementItems,
+        walletBalanceUsd
+      ),
+    [managementItems, userRecipients, walletBalanceUsd]
   );
 
   const userValidationErrors = useMemo(() => {
@@ -287,70 +408,6 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
 
     return errors;
   }, [userPreview, userRecipients]);
-
-  const selectedPackPreview = useMemo(() => {
-    if (!selectedPackGroup) {
-      return null;
-    }
-
-    const recipients: AllocationRecipientDraft[] = packRecipients.map((recipient) => ({
-      id: recipient.id,
-      email: recipient.email,
-      phone: recipient.phone,
-      requestedPacks: recipient.quantity
-        ? [
-            {
-              destinationId: selectedPackGroup.destinationId,
-              destinationName: selectedPackGroup.destinationName,
-              destinationFlag: selectedPackGroup.destinationFlag,
-              packId: selectedPackGroup.packId,
-              packName: selectedPackGroup.packName,
-              dataAllowance: selectedPackGroup.dataAllowance,
-              validity: selectedPackGroup.validity,
-              priceUsd: selectedPackGroup.priceUsd,
-              quantity: recipient.quantity,
-            },
-          ]
-        : [],
-    }));
-
-    return buildAllocationPreview(recipients);
-  }, [buildAllocationPreview, packRecipients, selectedPackGroup]);
-
-  const packValidationErrors = useMemo(() => {
-    if (!selectedPackGroup) {
-      return [];
-    }
-
-    const errors: string[] = [];
-    let activeRecipients = 0;
-
-    packRecipients.forEach((recipient, index) => {
-      const hasIdentity = recipientHasIdentity(recipient);
-
-      if (recipient.quantity > 0 && !hasIdentity) {
-        errors.push(`Recipient ${index + 1} needs an email or phone number.`);
-      }
-
-      if (hasIdentity && recipient.quantity < 1) {
-        errors.push(`Recipient ${index + 1} needs at least one pack.`);
-      }
-
-      if (hasIdentity && recipient.quantity > 0) {
-        activeRecipients += 1;
-      }
-    });
-
-    if (!activeRecipients) {
-      errors.push('Add at least one recipient for this pack.');
-    }
-
-    if (selectedPackPreview?.hasInsufficientBalance) {
-      errors.push('Wallet balance is too low for the requested top-up quantity.');
-    }
-
-    return errors;
-  }, [packRecipients, selectedPackGroup, selectedPackPreview]);
 
   const managementAvailableQuantity = useMemo(() => {
     if (!managementDraft || managementDraft.item.status !== 'unallocated') {
@@ -474,6 +531,11 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   }
 
   async function submitUserAllocation() {
+    if (userPreview?.hasInsufficientBalance) {
+      return;
+    }
+
+    setIsSubmittingAllocation(true);
     setAllocationSubmitError('');
 
     const recipients = userRecipients.map(({ isExpanded, ...recipient }) => recipient);
@@ -496,112 +558,52 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
       if (requests.length) {
         await assignPackOrders(requests);
       }
+      const totalUnits = requests.length;
+      const actionableRecipients = recipients.filter(
+        (recipient) =>
+          recipientHasIdentity(recipient) && recipient.requestedPacks.some((pack) => pack.quantity > 0)
+      );
+      const assignedCount = actionableRecipients.reduce((sum, recipient) => {
+        if (recipient.email.trim()) {
+          return sum + 1;
+        }
 
-      const result = submitAllocationPlan(recipients);
+        return sum;
+      }, 0);
+      const pendingCount = actionableRecipients.reduce((sum, recipient) => {
+        if (!recipient.email.trim() && recipient.phone.trim()) {
+          return sum + 1;
+        }
 
-      if (!result) {
-        return;
-      }
+        return sum;
+      }, 0);
 
       const nextItems = await fetchPackInventory('all');
       setManagementItems(nextItems);
-      setResultState(result);
+      await refreshWalletBalance();
+      setResultState({
+        preview:
+          userPreview ?? {
+            lines: [],
+            totalUnits,
+            stockUnits: totalUnits,
+            purchaseUnits: 0,
+            walletDeductionUsd: 0,
+            walletBalanceBeforeUsd: walletBalanceUsd,
+            walletBalanceAfterUsd: walletBalanceUsd,
+            hasInsufficientBalance: false,
+          },
+        assignedCount,
+        pendingCount,
+        failedCount: 0,
+        purchasedCount: userPreview?.purchaseUnits ?? 0,
+        inventoryItems: [],
+      });
       setUserRecipients([createUserRecipient()]);
     } catch (error) {
       setAllocationSubmitError(error instanceof Error ? error.message : 'Could not complete this allocation.');
-    }
-  }
-
-  function openPackAllocation(group: StockGroup) {
-    setSelectedPackGroup(group);
-    setPackRecipients([createPackRecipient()]);
-  }
-
-  function updatePackRecipientField(recipientId: string, field: 'email' | 'phone', value: string) {
-    setPackRecipients((current) =>
-      current.map((recipient) =>
-        recipient.id === recipientId ? { ...recipient, [field]: value } : recipient
-      )
-    );
-  }
-
-  function updatePackRecipientQuantity(recipientId: string, nextQuantity: number) {
-    setPackRecipients((current) =>
-      current.map((recipient) =>
-        recipient.id === recipientId ? { ...recipient, quantity: Math.max(0, nextQuantity) } : recipient
-      )
-    );
-  }
-
-  function addPackRecipient() {
-    setPackRecipients((current) => [...current, createPackRecipient(Date.now() + current.length)]);
-  }
-
-  function removePackRecipient(recipientId: string) {
-    setPackRecipients((current) =>
-      current.length === 1 ? current : current.filter((recipient) => recipient.id !== recipientId)
-    );
-  }
-
-  async function submitPackAllocation() {
-    if (!selectedPackGroup) {
-      return;
-    }
-
-    setAllocationSubmitError('');
-
-    const recipients: AllocationRecipientDraft[] = packRecipients.map((recipient) => ({
-      id: recipient.id,
-      email: recipient.email,
-      phone: recipient.phone,
-      requestedPacks: recipient.quantity
-        ? [
-            {
-              destinationId: selectedPackGroup.destinationId,
-              destinationName: selectedPackGroup.destinationName,
-              destinationFlag: selectedPackGroup.destinationFlag,
-              packId: selectedPackGroup.packId,
-              packName: selectedPackGroup.packName,
-              dataAllowance: selectedPackGroup.dataAllowance,
-              validity: selectedPackGroup.validity,
-              priceUsd: selectedPackGroup.priceUsd,
-              quantity: recipient.quantity,
-            },
-          ]
-        : [],
-    }));
-
-    const requests = packRecipients.flatMap((recipient) => {
-      const receiverUserId = recipient.email.trim() || recipient.phone.trim();
-
-      if (!receiverUserId || recipient.quantity < 1) {
-        return [];
-      }
-
-      return Array.from({ length: recipient.quantity }, () => ({
-        catalogId: selectedPackGroup.packId,
-        receiverUserId,
-      }));
-    });
-
-    try {
-      if (requests.length) {
-        await assignPackOrders(requests);
-      }
-
-      const result = submitAllocationPlan(recipients);
-
-      if (!result) {
-        return;
-      }
-
-      const nextItems = await fetchPackInventory('all');
-      setManagementItems(nextItems);
-      setResultState(result);
-      setSelectedPackGroup(null);
-      setPackRecipients([createPackRecipient()]);
-    } catch (error) {
-      setAllocationSubmitError(error instanceof Error ? error.message : 'Could not complete this allocation.');
+    } finally {
+      setIsSubmittingAllocation(false);
     }
   }
 
@@ -640,6 +642,7 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
       }
 
       await refreshManagementItems();
+      await refreshWalletBalance();
 
       setManagementDraft(null);
       setResultState({
@@ -694,27 +697,8 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
 
       {workspaceView === 'allocate' ? (
         <>
-          <View style={styles.modeRail}>
-            {allocationModes.map((allocationMode) => {
-              const isActive = allocationMode.key === mode;
-
-              return (
-                <Pressable
-                  key={allocationMode.key}
-                  onPress={() => setMode(allocationMode.key)}
-                  style={[styles.modeChip, isActive && styles.modeChipActive]}
-                >
-                  <Text style={[styles.modeChipText, isActive && styles.modeChipTextActive]}>
-                    {allocationMode.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
           <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-            {mode === 'user' ? (
-              <>
+            <>
                 <View style={styles.heroCard}>
                   <View style={styles.heroCopy}>
                     <Text style={styles.heroTitle}>Assign many packs to many users</Text>
@@ -772,8 +756,8 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                         <View style={styles.packList}>
                           {recipient.requestedPacks.map((pack) => {
                             const packKey = `${pack.destinationId}:${pack.packId}`;
-                            const stockGroup = stockGroups.find((group) => group.key === packKey);
-                            const available = stockGroup?.availableQuantity ?? 0;
+                            const inventoryPack = inventoryPickerPacks.find((group) => group.key === packKey);
+                            const available = inventoryPack?.availableQuantity ?? 0;
                             const shortage = Math.max(0, pack.quantity - available);
 
                             return (
@@ -824,18 +808,35 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                     <Text style={styles.summaryLabel}>Using stock</Text>
                     <Text style={styles.summaryValue}>{userPreview?.stockUnits ?? 0} packs</Text>
                   </View>
-                  <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>Buying now</Text>
-                    <Text style={styles.summaryValue}>{userPreview?.purchaseUnits ?? 0} packs</Text>
-                  </View>
-                  <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>Wallet impact</Text>
-                    <Text style={styles.summaryValue}>
-                      ${userPreview?.walletDeductionUsd.toFixed(2) ?? '0.00'}
+                  {userPreview?.purchaseUnits ? (
+                    <>
+                      <View style={styles.summaryRow}>
+                        <Text style={styles.summaryLabel}>Buying now</Text>
+                        <Text style={styles.summaryValue}>{userPreview.purchaseUnits} packs</Text>
+                      </View>
+                      <View style={styles.summaryRow}>
+                        <Text style={styles.summaryLabel}>Wallet impact</Text>
+                        <Text style={styles.summaryValue}>
+                          ${userPreview.walletDeductionUsd.toFixed(2)}
+                        </Text>
+                      </View>
+                      <Text style={styles.balanceHint}>
+                        {isLoadingWallet ? 'Refreshing wallet…' : `Balance $${walletBalanceUsd.toFixed(2)}`}
+                      </Text>
+                    </>
+                  ) : (
+                    <Text style={styles.balanceHint}>Selected packs are covered by inventory.</Text>
+                  )}
+                </View>
+
+                {userPreview?.hasInsufficientBalance ? (
+                  <View style={styles.warningCard}>
+                    <Text style={styles.warningTitle}>Wallet balance is too low</Text>
+                    <Text style={styles.warningText}>
+                      Add ${(userPreview.walletDeductionUsd - walletBalanceUsd).toFixed(2)} more to cover this allocation.
                     </Text>
                   </View>
-                  <Text style={styles.balanceHint}>Balance ${walletBalanceUsd.toFixed(2)}</Text>
-                </View>
+                ) : null}
 
                 {userValidationErrors.length ? (
                   <View style={styles.errorCard}>
@@ -854,8 +855,8 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                 ) : null}
 
                 <PrimaryButton
-                  disabled={Boolean(userValidationErrors.length)}
-                  label="Allocate all"
+                  disabled={Boolean(userValidationErrors.length) || isSubmittingAllocation}
+                  label={isSubmittingAllocation ? 'Allocating…' : 'Allocate all'}
                   onPress={submitUserAllocation}
                 />
                 {userPreview?.hasInsufficientBalance ? (
@@ -865,56 +866,7 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                     variant="secondary"
                   />
                 ) : null}
-              </>
-            ) : (
-              <>
-                <View style={styles.searchField}>
-                  <Ionicons color={colors.textSoft} name="search-outline" size={18} />
-                  <TextInput
-                    onChangeText={setPackSearch}
-                    placeholder="Search stock by destination or pack"
-                    placeholderTextColor={colors.textSoft}
-                    style={styles.searchInput}
-                    value={packSearch}
-                  />
-                </View>
-
-                {filteredStockGroups.map((group) => (
-                  <View key={group.key} style={styles.stockCard}>
-                    <View style={styles.stockTopRow}>
-                      <View style={styles.stockCopy}>
-                        <Text style={styles.stockTitle}>
-                          {group.destinationFlag} {group.destinationName} • {group.packName}
-                        </Text>
-                        <Text style={styles.stockMeta}>
-                          {group.dataAllowance} • {group.validity} • {group.availableQuantity} in stock
-                        </Text>
-                      </View>
-                      <View style={styles.stockCountPill}>
-                        <Text style={styles.stockCountText}>{group.availableQuantity}</Text>
-                      </View>
-                    </View>
-                    <View style={styles.stockActions}>
-                      <Text style={styles.stockHelperText}>
-                        Assign this stock group directly to one or more users.
-                      </Text>
-                      <Pressable onPress={() => openPackAllocation(group)} style={styles.inlinePrimaryAction}>
-                        <Text style={styles.inlinePrimaryActionText}>Assign</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ))}
-
-                {!filteredStockGroups.length ? (
-                  <View style={styles.emptyState}>
-                    <Text style={styles.emptyTitle}>No matching stock</Text>
-                    <Text style={styles.emptyBody}>
-                      Add more packs from Inventory when this destination is out of stock.
-                    </Text>
-                  </View>
-                ) : null}
-              </>
-            )}
+            </>
           </ScrollView>
         </>
       ) : (
@@ -1036,8 +988,10 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
         onClose={() => {
           setPickerRecipientId(null);
           setPickerQuery('');
+          setIsInventorySectionOpen(true);
+          setIsCatalogSectionOpen(false);
         }}
-        subtitle="Search once and attach packs to the selected user."
+        subtitle="Choose from live inventory first, then browse the full pack catalog."
         title="Add pack"
         visible={Boolean(pickerRecipientId)}
       >
@@ -1053,155 +1007,125 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
             />
           </View>
 
-          {filteredPickerPacks.map((pack) => {
-            const key = `${pack.destinationId}:${pack.packId}`;
-            const available = stockGroups.find((group) => group.key === key)?.availableQuantity ?? 0;
+          <View style={styles.sheetSection}>
+            <Pressable
+              onPress={() => setIsInventorySectionOpen((current) => !current)}
+              style={styles.sheetSectionHeader}
+            >
+              <Text style={styles.sheetSectionTitle}>Inventory packs</Text>
+              <Ionicons
+                color={colors.textSoft}
+                name={isInventorySectionOpen ? 'chevron-up' : 'chevron-down'}
+                size={18}
+              />
+            </Pressable>
 
-            return (
-              <Pressable
-                key={key}
-                onPress={() =>
-                  pickerRecipientId
-                    ? addRequestedPackToRecipient(pickerRecipientId, {
-                        destinationId: pack.destinationId,
-                        destinationName: pack.destinationName,
-                        destinationFlag: pack.destinationFlag,
-                        packId: pack.packId,
-                        packName: pack.packName,
-                        dataAllowance: pack.dataAllowance,
-                        validity: pack.validity,
-                        priceUsd: pack.priceUsd,
-                        quantity: 1,
-                      })
-                    : undefined
-                }
-                style={({ pressed }) => [styles.sheetOptionCard, pressed && styles.cardPressed]}
-              >
-                <View style={styles.sheetOptionCopy}>
-                  <Text style={styles.sheetOptionTitle}>
-                    {pack.destinationFlag} {pack.destinationName} • {pack.packName}
-                  </Text>
-                  <Text style={styles.sheetOptionMeta}>
-                    {pack.dataAllowance} • {pack.validity} • ${pack.priceUsd.toFixed(2)} • {available} in stock
-                  </Text>
+            {isInventorySectionOpen ? (
+              inventoryPickerPacks.length ? (
+                inventoryPickerPacks.map((pack) => (
+                  <Pressable
+                    key={pack.key}
+                    onPress={() =>
+                      pickerRecipientId
+                        ? addRequestedPackToRecipient(pickerRecipientId, {
+                            destinationId: pack.destinationId,
+                            destinationName: pack.destinationName,
+                            destinationFlag: pack.destinationFlag,
+                            packId: pack.packId,
+                            packName: pack.packName,
+                            dataAllowance: pack.dataAllowance,
+                            validity: pack.validity,
+                            priceUsd: pack.priceUsd,
+                            quantity: 1,
+                          })
+                        : undefined
+                    }
+                    style={({ pressed }) => [styles.sheetOptionCard, pressed && styles.cardPressed]}
+                  >
+                    <View style={styles.sheetOptionCopy}>
+                      <Text style={styles.sheetOptionTitle}>
+                        {pack.destinationFlag} {pack.destinationName} • {pack.packName}
+                      </Text>
+                      <Text style={styles.sheetOptionMeta}>
+                        {pack.dataAllowance} • {pack.validity} • ${pack.priceUsd.toFixed(2)} • {pack.availableQuantity} in stock
+                      </Text>
+                    </View>
+                    <Ionicons color={colors.primaryStrong} name="add-circle-outline" size={18} />
+                  </Pressable>
+                ))
+              ) : (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyTitle}>No inventory packs</Text>
+                  <Text style={styles.emptyBody}>Unallocated packs will appear here first.</Text>
                 </View>
-                <Ionicons color={colors.primaryStrong} name="add-circle-outline" size={18} />
-              </Pressable>
-            );
-          })}
-        </View>
-      </BottomSheetModal>
-
-      <BottomSheetModal
-        onClose={() => {
-          setSelectedPackGroup(null);
-          setPackRecipients([createPackRecipient()]);
-        }}
-        subtitle={
-          selectedPackGroup
-            ? `${selectedPackGroup.destinationFlag} ${selectedPackGroup.destinationName} • ${selectedPackGroup.packName}`
-            : undefined
-        }
-        title="Assign pack"
-        visible={Boolean(selectedPackGroup)}
-      >
-        {selectedPackGroup ? (
-          <View style={styles.sheetContent}>
-            <View style={styles.summaryCard}>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Available in stock</Text>
-                <Text style={styles.summaryValue}>{selectedPackGroup.availableQuantity}</Text>
-              </View>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Buying shortfall</Text>
-                <Text style={styles.summaryValue}>{selectedPackPreview?.purchaseUnits ?? 0} packs</Text>
-              </View>
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Wallet impact</Text>
-                <Text style={styles.summaryValue}>
-                  ${selectedPackPreview?.walletDeductionUsd.toFixed(2) ?? '0.00'}
-                </Text>
-              </View>
-            </View>
-
-            {packRecipients.map((recipient, index) => (
-              <View key={recipient.id} style={styles.sheetRecipientCard}>
-                <View style={styles.recipientHeader}>
-                  <Text style={styles.recipientTitle}>Recipient {index + 1}</Text>
-                  {packRecipients.length > 1 ? (
-                    <Pressable onPress={() => removePackRecipient(recipient.id)}>
-                      <Text style={styles.removeText}>Remove</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-                <TextInput
-                  autoCapitalize="none"
-                  keyboardType="email-address"
-                  onChangeText={(value) => updatePackRecipientField(recipient.id, 'email', value)}
-                  placeholder="Email"
-                  placeholderTextColor={colors.textSoft}
-                  style={styles.input}
-                  value={recipient.email}
-                />
-                <TextInput
-                  keyboardType="phone-pad"
-                  onChangeText={(value) => updatePackRecipientField(recipient.id, 'phone', value)}
-                  placeholder="Phone"
-                  placeholderTextColor={colors.textSoft}
-                  style={styles.input}
-                  value={recipient.phone}
-                />
-
-                <View style={styles.packRow}>
-                  <View style={styles.packCopy}>
-                    <Text style={styles.packName}>Quantity</Text>
-                    <Text style={styles.packMeta}>
-                      {selectedPackGroup.dataAllowance} • ${selectedPackGroup.priceUsd.toFixed(2)}
-                    </Text>
-                  </View>
-                  <View style={styles.stepper}>
-                    <Pressable
-                      onPress={() => updatePackRecipientQuantity(recipient.id, Math.max(0, recipient.quantity - 1))}
-                      style={styles.stepperButton}
-                    >
-                      <Ionicons color={colors.primaryStrong} name="remove" size={14} />
-                    </Pressable>
-                    <Text style={styles.stepperValue}>{recipient.quantity}</Text>
-                    <Pressable
-                      onPress={() => updatePackRecipientQuantity(recipient.id, recipient.quantity + 1)}
-                      style={styles.stepperButton}
-                    >
-                      <Ionicons color={colors.primaryStrong} name="add" size={14} />
-                    </Pressable>
-                  </View>
-                </View>
-              </View>
-            ))}
-
-            {packValidationErrors.length ? (
-              <View style={styles.errorCard}>
-                {packValidationErrors.map((error) => (
-                  <Text key={error} style={styles.errorText}>
-                    {error}
-                  </Text>
-                ))}
-              </View>
+              )
             ) : null}
-
-            {allocationSubmitError ? (
-              <View style={styles.errorCard}>
-                <Text style={styles.errorText}>{allocationSubmitError}</Text>
-              </View>
-            ) : null}
-
-            <PrimaryButton label="Add another user" onPress={addPackRecipient} variant="secondary" />
-            <PrimaryButton
-              disabled={Boolean(packValidationErrors.length)}
-              label="Assign pack"
-              onPress={submitPackAllocation}
-            />
           </View>
-        ) : null}
+
+          <View style={styles.sheetSection}>
+            <Pressable
+              onPress={() => setIsCatalogSectionOpen((current) => !current)}
+              style={styles.sheetSectionHeader}
+            >
+              <Text style={styles.sheetSectionTitle}>All packs</Text>
+              <Ionicons
+                color={colors.textSoft}
+                name={isCatalogSectionOpen ? 'chevron-up' : 'chevron-down'}
+                size={18}
+              />
+            </Pressable>
+
+            {isCatalogSectionOpen ? (
+              isLoadingCatalogPacks ? (
+                <View style={styles.loadingPanel}>
+                  <ActivityIndicator color={colors.primaryStrong} size="small" />
+                  <Text style={styles.loadingText}>Loading pack catalog</Text>
+                </View>
+              ) : catalogPackError ? (
+                <View style={styles.errorCard}>
+                  <Text style={styles.errorText}>{catalogPackError}</Text>
+                </View>
+              ) : filteredCatalogPacks.length ? (
+                filteredCatalogPacks.map((pack) => (
+                  <Pressable
+                    key={pack.key}
+                    onPress={() =>
+                      pickerRecipientId
+                        ? addRequestedPackToRecipient(pickerRecipientId, {
+                            destinationId: pack.destinationId,
+                            destinationName: pack.destinationName,
+                            destinationFlag: pack.destinationFlag,
+                            packId: pack.packId,
+                            packName: pack.packName,
+                            dataAllowance: pack.dataAllowance,
+                            validity: pack.validity,
+                            priceUsd: pack.priceUsd,
+                            quantity: 1,
+                          })
+                        : undefined
+                    }
+                    style={({ pressed }) => [styles.sheetOptionCard, pressed && styles.cardPressed]}
+                  >
+                    <View style={styles.sheetOptionCopy}>
+                      <Text style={styles.sheetOptionTitle}>
+                        {pack.destinationFlag} {pack.destinationName} • {pack.packName}
+                      </Text>
+                      <Text style={styles.sheetOptionMeta}>
+                        {pack.dataAllowance} • {pack.validity} • ${pack.priceUsd.toFixed(2)}
+                      </Text>
+                    </View>
+                    <Ionicons color={colors.primaryStrong} name="add-circle-outline" size={18} />
+                  </Pressable>
+                ))
+              ) : (
+                <View style={styles.emptyState}>
+                  <Text style={styles.emptyTitle}>No packs found</Text>
+                  <Text style={styles.emptyBody}>Try another search term.</Text>
+                </View>
+              )
+            ) : null}
+          </View>
+        </View>
       </BottomSheetModal>
 
       <BottomSheetModal
@@ -1564,6 +1488,24 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 6,
   },
+  warningCard: {
+    borderRadius: 20,
+    backgroundColor: '#FFF5DB',
+    padding: 14,
+    gap: 6,
+  },
+  warningTitle: {
+    fontSize: 13,
+    fontFamily: typography.heading,
+    fontWeight: '700',
+    color: '#9A6700',
+  },
+  warningText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: '#9A6700',
+  },
   errorText: {
     fontSize: 13,
     lineHeight: 18,
@@ -1778,6 +1720,23 @@ const styles = StyleSheet.create({
   },
   sheetContent: {
     gap: 14,
+  },
+  sheetSection: {
+    gap: 10,
+  },
+  sheetSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  sheetSectionTitle: {
+    fontSize: 13,
+    fontFamily: typography.heading,
+    fontWeight: '700',
+    color: colors.textSoft,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   sheetOptionCard: {
     borderRadius: 18,

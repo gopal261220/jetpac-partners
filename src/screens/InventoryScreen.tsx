@@ -12,7 +12,6 @@ import { fetchEsimInventory, type EsimInventoryFilter, type EsimInventoryItem } 
 import { orderEsims } from '../features/buy/api/esims';
 import { fetchPackInventory, type PackInventoryItem } from '../features/buy/api/packInventory';
 import { fetchDestinationPacks } from '../features/buy/api/packs';
-import { useBuyFlow } from '../features/buy/context/BuyFlowContext';
 import type { DestinationCatalog, StockGroup } from '../features/buy/types';
 import { fetchWalletScreenData } from '../features/wallet/api/wallet';
 import type { AppTabScreenProps } from '../navigation/types';
@@ -66,11 +65,6 @@ function getEsimStatusTone(status: string) {
 }
 
 export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Inventory'>) {
-  const {
-    buyRequestedPacksToInventory,
-    completePurchase,
-  } = useBuyFlow();
-
   const [activeTab, setActiveTab] = useState<InventoryTab>(route.params?.initialTab ?? 'packs');
   const [packQuery, setPackQuery] = useState('');
   const [destinationQuery, setDestinationQuery] = useState('');
@@ -468,16 +462,11 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
     try {
       await syncPackAssignments();
-
-      const result = buyRequestedPacksToInventory(selectedPurchasePacks);
-
-      if (!result) {
-        return;
-      }
+      const totalUnits = selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0);
 
       setResultState({
         title: 'Pack inventory updated',
-        body: `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory.`,
+        body: `${totalUnits} pack${totalUnits === 1 ? '' : 's'} added to inventory.`,
         accent: colors.primaryStrong,
       });
       await Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
@@ -490,32 +479,20 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   }
 
   async function buyAndAllocateSelectedPacks() {
-    if (!selectedDestination) {
-      return;
-    }
-
     setIsSubmittingPackPurchase(true);
     setPurchaseSubmitError(null);
 
     try {
       const receiverUserId = purchaseRecipient.email.trim() || undefined;
+      const totalUnits = selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity, 0);
 
       await syncPackAssignments(receiverUserId);
-
-      const result = completePurchase(selectedDestination, packSelections, {
-        email: receiverUserId ?? '',
-        phone: '',
-      });
-
-      if (!result) {
-        return;
-      }
 
       setResultState({
         title: receiverUserId ? 'Purchase and assignment complete' : 'Purchase complete',
         body: receiverUserId
-          ? `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} assigned to ${receiverUserId}.`
-          : `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory without assignment.`,
+          ? `${totalUnits} pack${totalUnits === 1 ? '' : 's'} assigned to ${receiverUserId}.`
+          : `${totalUnits} pack${totalUnits === 1 ? '' : 's'} added to inventory without assignment.`,
         accent: colors.primaryStrong,
       });
       await Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
