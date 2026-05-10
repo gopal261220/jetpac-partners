@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 import { destinationCatalog } from '../data/catalog';
-import type { DataPack, DestinationCatalog, DestinationCategory } from '../types';
+import type { DestinationCatalog, DestinationCategory } from '../types';
 import { getCandidateApiBaseUrls } from './runtime';
 
 const DESTINATIONS_TIMEOUT_MS = 8000;
@@ -60,12 +60,6 @@ const CATEGORY_BY_NAME: Record<string, DestinationCategory> = {
   'United Kingdom': 'Popular',
 };
 
-const DEFAULT_PACKS: DataPack[] = [
-  { id: 'starter', name: 'Starter', dataAllowance: '1 GB', validity: '7 days', priceUsd: 4 },
-  { id: 'traveller', name: 'Traveller', dataAllowance: '5 GB', validity: '15 days', priceUsd: 12 },
-  { id: 'power', name: 'Power', dataAllowance: '10 GB', validity: '30 days', priceUsd: 22 },
-];
-
 function slugify(value: string) {
   return value
     .trim()
@@ -76,17 +70,6 @@ function slugify(value: string) {
 
 function normalizeValue(value: string) {
   return slugify(value.replace(/-esim$/i, ''));
-}
-
-function createDefaultPacks(destinationId: string, destinationName: string): DataPack[] {
-  const premiumMultiplier =
-    destinationName === 'Global' || destinationName === 'North America' || destinationName === 'Europe' ? 1.1 : 1;
-
-  return DEFAULT_PACKS.map((pack) => ({
-    ...pack,
-    id: `${destinationId}-${pack.id}`,
-    priceUsd: Math.round(pack.priceUsd * premiumMultiplier),
-  }));
 }
 
 function matchFallbackDestination(remoteDestination: RemoteDestinationPage) {
@@ -132,7 +115,7 @@ function mapRemoteDestination(remoteDestination: RemoteDestinationPage): Destina
     region: REGION_BY_NAME[name] ?? 'Regional',
     category: CATEGORY_BY_NAME[name] ?? 'Regional',
     teaser: `Fast-moving ${name.toLowerCase()} packs for quick partner allocation.`,
-    packs: createDefaultPacks(id, name),
+    packs: [],
   };
 }
 
@@ -149,7 +132,7 @@ export async function fetchDestinationCatalog(): Promise<DestinationCatalog[]> {
       });
 
       if (!Array.isArray(response.data?.data) || !response.data.data.length) {
-        return destinationCatalog;
+        return [];
       }
 
       return response.data.data.map(mapRemoteDestination);

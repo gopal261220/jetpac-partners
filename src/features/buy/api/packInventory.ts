@@ -9,21 +9,20 @@ const PACK_INVENTORY_TIMEOUT_MS = 8000;
 export type PackInventoryStatusFilter = 'all' | 'allocated' | 'unallocated';
 
 type PackInventoryApiItem = {
-  id?: string | number | null;
+  allocation_id?: string | number | null;
   catalog_id?: string | number | null;
-  page_name?: string | null;
-  page_slug?: string | null;
   pack_name?: string | null;
-  data_allowance?: string | null;
-  data?: string | null;
-  validity?: string | null;
-  sold_price_usd?: string | number | null;
+  page_name?: string | null;
+  country_name?: string | null;
   price_usd?: string | number | null;
   receiver_user_id?: string | null;
-  status?: string | null;
+  allocation_status?: string | null;
+  order_id?: string | null;
+  invoice_id?: string | null;
+  request_id?: string | null;
+  transaction_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
-  assigned_at?: string | null;
 };
 
 type PackInventoryResponse = {
@@ -49,9 +48,9 @@ function normalizeValue(value?: string | null) {
   return (value ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
 }
 
-function resolveDestinationMeta(pageName?: string | null, pageSlug?: string | null) {
+function resolveDestinationMeta(pageName?: string | null, countryName?: string | null) {
   const normalizedPageName = normalizeValue(pageName);
-  const normalizedPageSlug = normalizeValue(pageSlug);
+  const normalizedCountryName = normalizeValue(countryName);
 
   const match =
     destinationCatalog.find((destination) => {
@@ -63,37 +62,37 @@ function resolveDestinationMeta(pageName?: string | null, pageSlug?: string | nu
         normalizedDestinationName === normalizedPageName ||
         normalizedDestinationId === normalizedPageName ||
         normalizedApiName === normalizedPageName ||
-        normalizedDestinationName === normalizedPageSlug ||
-        normalizedDestinationId === normalizedPageSlug ||
-        normalizedApiName === normalizedPageSlug
+        normalizedDestinationName === normalizedCountryName ||
+        normalizedDestinationId === normalizedCountryName ||
+        normalizedApiName === normalizedCountryName
       );
     }) ?? null;
 
   return {
-    destinationName: match?.name ?? pageName ?? 'Destination',
+    destinationName: match?.name ?? countryName ?? pageName ?? 'Destination',
     destinationFlag: match?.flag ?? '🌐',
   };
 }
 
 function mapPackInventoryItem(item: PackInventoryApiItem): PackInventoryItem {
-  const destinationMeta = resolveDestinationMeta(item.page_name, item.page_slug);
+  const destinationMeta = resolveDestinationMeta(item.page_name, item.country_name);
   const catalogId = item.catalog_id != null ? String(item.catalog_id) : '';
   const createdAt = item.created_at ?? new Date().toISOString();
-  const normalizedStatus = item.status?.toLowerCase() === 'allocated' ? 'allocated' : 'unallocated';
+  const normalizedStatus = item.allocation_status?.toLowerCase() === 'allocated' ? 'allocated' : 'unallocated';
 
   return {
-    id: item.id != null ? String(item.id) : `${catalogId || 'catalog'}-${createdAt}`,
+    id: item.allocation_id != null ? String(item.allocation_id) : `${catalogId || 'catalog'}-${createdAt}`,
     catalogId,
     destinationName: destinationMeta.destinationName,
     destinationFlag: destinationMeta.destinationFlag,
     packName: item.pack_name ?? 'Pack',
-    dataAllowance: item.data_allowance ?? item.data ?? '--',
-    validity: item.validity ?? '--',
-    priceUsd: Number(item.sold_price_usd ?? item.price_usd ?? 0),
+    dataAllowance: '--',
+    validity: '--',
+    priceUsd: Number(item.price_usd ?? 0),
     status: normalizedStatus,
     receiverUserId: item.receiver_user_id ?? undefined,
     createdAt,
-    updatedAt: item.updated_at ?? item.assigned_at ?? undefined,
+    updatedAt: item.updated_at ?? undefined,
   };
 }
 

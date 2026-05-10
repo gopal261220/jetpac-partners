@@ -1,5 +1,6 @@
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { BottomSheetModal } from '../../../components/BottomSheetModal';
@@ -123,6 +124,22 @@ function getManagementActionLabel(status: InventoryStatus | PackInventoryItem['s
   return 'Retry';
 }
 
+function getManagementStatusLabel(status: InventoryStatus | PackInventoryItem['status']) {
+  if (status === 'allocated' || status === 'assigned') {
+    return 'Assigned';
+  }
+
+  if (status === 'unallocated' || status === 'unassigned') {
+    return 'Unallocated';
+  }
+
+  if (status === 'pending') {
+    return 'Pending';
+  }
+
+  return 'Failed';
+}
+
 function recipientHasIdentity(recipient: RecipientDraft) {
   return Boolean(recipient.email.trim() || recipient.phone.trim());
 }
@@ -165,6 +182,7 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   const [selectedPackGroup, setSelectedPackGroup] = useState<StockGroup | null>(null);
   const [packRecipients, setPackRecipients] = useState<PackRecipientDraft[]>([createPackRecipient()]);
   const [resultState, setResultState] = useState<AllocationResult | null>(null);
+  const [allocationSubmitError, setAllocationSubmitError] = useState('');
   const [assignmentQuery, setAssignmentQuery] = useState('');
   const [assignmentFilter, setAssignmentFilter] = useState<PackInventoryStatusFilter>('all');
   const [managementItems, setManagementItems] = useState<PackInventoryItem[]>([]);
@@ -178,40 +196,37 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
   const deferredPackSearch = useDeferredValue(packSearch.trim().toLowerCase());
   const deferredAssignmentQuery = useDeferredValue(assignmentQuery.trim().toLowerCase());
 
+  const refreshManagementItems = useCallback(async () => {
+    setIsLoadingManagement(true);
+    setManagementListError('');
+
+    try {
+      const nextItems = await fetchPackInventory(assignmentFilter);
+      setManagementItems(nextItems);
+    } catch (error) {
+      setManagementListError(error instanceof Error ? error.message : 'Could not load pack assignments.');
+    } finally {
+      setIsLoadingManagement(false);
+    }
+  }, [assignmentFilter]);
+
   useEffect(() => {
     if (workspaceView !== 'management') {
       return;
     }
 
-    let isCancelled = false;
+    void refreshManagementItems();
+  }, [refreshManagementItems, workspaceView]);
 
-    async function loadManagementItems() {
-      setIsLoadingManagement(true);
-      setManagementListError('');
-
-      try {
-        const nextItems = await fetchPackInventory(assignmentFilter);
-
-        if (!isCancelled) {
-          setManagementItems(nextItems);
-        }
-      } catch (error) {
-        if (!isCancelled) {
-          setManagementListError(error instanceof Error ? error.message : 'Could not load pack assignments.');
-        }
-      } finally {
-        if (!isCancelled) {
-          setIsLoadingManagement(false);
-        }
+  useFocusEffect(
+    useCallback(() => {
+      if (workspaceView !== 'management') {
+        return;
       }
-    }
 
-    void loadManagementItems();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [assignmentFilter, workspaceView]);
+      void refreshManagementItems();
+    }, [refreshManagementItems, workspaceView])
+  );
 
   const filteredPickerPacks = useMemo(() => {
     return catalogPacks.filter((pack) => {
@@ -458,15 +473,43 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
     setPickerQuery('');
   }
 
-  function submitUserAllocation() {
-    const result = submitAllocationPlan(userRecipients.map(({ isExpanded, ...recipient }) => recipient));
+  async function submitUserAllocation() {
+    setAllocationSubmitError('');
 
-    if (!result) {
-      return;
+    const recipients = userRecipients.map(({ isExpanded, ...recipient }) => recipient);
+    const requests = recipients.flatMap((recipient) => {
+      const receiverUserId = recipient.email.trim() || recipient.phone.trim();
+
+      if (!receiverUserId) {
+        return [];
+      }
+
+      return recipient.requestedPacks.flatMap((pack) =>
+        Array.from({ length: pack.quantity }, () => ({
+          catalogId: pack.packId,
+          receiverUserId,
+        }))
+      );
+    });
+
+    try {
+      if (requests.length) {
+        await assignPackOrders(requests);
+      }
+
+      const result = submitAllocationPlan(recipients);
+
+      if (!result) {
+        return;
+      }
+
+      const nextItems = await fetchPackInventory('all');
+      setManagementItems(nextItems);
+      setResultState(result);
+      setUserRecipients([createUserRecipient()]);
+    } catch (error) {
+      setAllocationSubmitError(error instanceof Error ? error.message : 'Could not complete this allocation.');
     }
-
-    setResultState(result);
-    setUserRecipients([createUserRecipient()]);
   }
 
   function openPackAllocation(group: StockGroup) {
@@ -500,10 +543,12 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
     );
   }
 
-  function submitPackAllocation() {
+  async function submitPackAllocation() {
     if (!selectedPackGroup) {
       return;
     }
+
+    setAllocationSubmitError('');
 
     const recipients: AllocationRecipientDraft[] = packRecipients.map((recipient) => ({
       id: recipient.id,
@@ -526,15 +571,38 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
         : [],
     }));
 
-    const result = submitAllocationPlan(recipients);
+    const requests = packRecipients.flatMap((recipient) => {
+      const receiverUserId = recipient.email.trim() || recipient.phone.trim();
 
-    if (!result) {
-      return;
+      if (!receiverUserId || recipient.quantity < 1) {
+        return [];
+      }
+
+      return Array.from({ length: recipient.quantity }, () => ({
+        catalogId: selectedPackGroup.packId,
+        receiverUserId,
+      }));
+    });
+
+    try {
+      if (requests.length) {
+        await assignPackOrders(requests);
+      }
+
+      const result = submitAllocationPlan(recipients);
+
+      if (!result) {
+        return;
+      }
+
+      const nextItems = await fetchPackInventory('all');
+      setManagementItems(nextItems);
+      setResultState(result);
+      setSelectedPackGroup(null);
+      setPackRecipients([createPackRecipient()]);
+    } catch (error) {
+      setAllocationSubmitError(error instanceof Error ? error.message : 'Could not complete this allocation.');
     }
-
-    setResultState(result);
-    setSelectedPackGroup(null);
-    setPackRecipients([createPackRecipient()]);
   }
 
   function openManagementSheet(item: PackInventoryItem) {
@@ -571,8 +639,7 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
         );
       }
 
-      const nextItems = await fetchPackInventory(assignmentFilter);
-      setManagementItems(nextItems);
+      await refreshManagementItems();
 
       setManagementDraft(null);
       setResultState({
@@ -780,6 +847,12 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                   </View>
                 ) : null}
 
+                {allocationSubmitError ? (
+                  <View style={styles.errorCard}>
+                    <Text style={styles.errorText}>{allocationSubmitError}</Text>
+                  </View>
+                ) : null}
+
                 <PrimaryButton
                   disabled={Boolean(userValidationErrors.length)}
                   label="Allocate all"
@@ -924,7 +997,9 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                       </Text>
                     </View>
                     <View style={[styles.statusChip, { backgroundColor: tone.backgroundColor }]}>
-                      <Text style={[styles.statusChipText, { color: tone.color }]}>{item.status}</Text>
+                      <Text style={[styles.statusChipText, { color: tone.color }]}>
+                        {getManagementStatusLabel(item.status)}
+                      </Text>
                     </View>
                   </View>
                   <Text style={styles.assignmentTime}>
@@ -932,11 +1007,17 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
                     {item.updatedAt ? ` • Updated ${new Date(item.updatedAt).toLocaleString()}` : ''}
                   </Text>
                   {item.status === 'unallocated' ? (
-                    <Text style={styles.assignmentQuantityHint}>{availableGroupQuantity} ready in this pack group</Text>
+                    <>
+                      <Text style={styles.assignmentQuantityHint}>{availableGroupQuantity} ready in this pack group</Text>
+                      <Pressable onPress={() => openManagementSheet(item)} style={styles.inlineAction}>
+                        <Text style={styles.inlineActionText}>{getManagementActionLabel(item.status)}</Text>
+                      </Pressable>
+                    </>
+                  ) : item.status === 'allocated' ? (
+                    <Pressable onPress={() => openManagementSheet(item)} style={styles.inlineAction}>
+                      <Text style={styles.inlineActionText}>{getManagementActionLabel(item.status)}</Text>
+                    </Pressable>
                   ) : null}
-                  <Pressable onPress={() => openManagementSheet(item)} style={styles.inlineAction}>
-                    <Text style={styles.inlineActionText}>{getManagementActionLabel(item.status)}</Text>
-                  </Pressable>
                 </View>
               );
             })}
@@ -1107,6 +1188,12 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
               </View>
             ) : null}
 
+            {allocationSubmitError ? (
+              <View style={styles.errorCard}>
+                <Text style={styles.errorText}>{allocationSubmitError}</Text>
+              </View>
+            ) : null}
+
             <PrimaryButton label="Add another user" onPress={addPackRecipient} variant="secondary" />
             <PrimaryButton
               disabled={Boolean(packValidationErrors.length)}
@@ -1145,13 +1232,17 @@ export function AllocateWorkspaceScreen({ navigation }: WorkspaceProps) {
 
             <TextInput
               autoCapitalize="none"
+              editable={managementDraft.item.status !== 'allocated'}
               keyboardType="email-address"
               onChangeText={(value) => setManagementDraft((current) => (current ? { ...current, email: value } : current))}
               placeholder="Email"
               placeholderTextColor={colors.textSoft}
-              style={styles.input}
+              style={[styles.input, managementDraft.item.status === 'allocated' && styles.inputDisabled]}
               value={managementDraft.email}
             />
+            {managementDraft.item.status === 'allocated' ? (
+              <Text style={styles.fieldHint}>Assigned email is locked for reassign flow.</Text>
+            ) : null}
             <TextInput
               keyboardType="phone-pad"
               onChangeText={(value) => setManagementDraft((current) => (current ? { ...current, phone: value } : current))}
@@ -1376,6 +1467,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: typography.body,
     color: colors.text,
+  },
+  inputDisabled: {
+    opacity: 0.72,
+  },
+  fieldHint: {
+    marginTop: -6,
+    fontSize: 12,
+    fontFamily: typography.body,
+    color: colors.textSoft,
   },
   packList: {
     gap: 10,

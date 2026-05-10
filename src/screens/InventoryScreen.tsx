@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 
 import { BottomSheetModal } from '../components/BottomSheetModal';
 import { PrimaryButton } from '../components/PrimaryButton';
@@ -10,9 +10,9 @@ import { assignPackOrders } from '../features/buy/api/assign';
 import { fetchDestinationCatalog } from '../features/buy/api/destinations';
 import { fetchEsimInventory, type EsimInventoryFilter, type EsimInventoryItem } from '../features/buy/api/esimInventory';
 import { orderEsims } from '../features/buy/api/esims';
+import { fetchPackInventory, type PackInventoryItem } from '../features/buy/api/packInventory';
 import { fetchDestinationPacks } from '../features/buy/api/packs';
 import { useBuyFlow } from '../features/buy/context/BuyFlowContext';
-import { destinationCatalog } from '../features/buy/data/catalog';
 import type { DestinationCatalog, StockGroup } from '../features/buy/types';
 import { fetchWalletScreenData } from '../features/wallet/api/wallet';
 import type { AppTabScreenProps } from '../navigation/types';
@@ -69,16 +69,17 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   const {
     buyRequestedPacksToInventory,
     completePurchase,
-    inventoryItems,
-    stockGroups,
   } = useBuyFlow();
 
   const [activeTab, setActiveTab] = useState<InventoryTab>(route.params?.initialTab ?? 'packs');
   const [packQuery, setPackQuery] = useState('');
   const [destinationQuery, setDestinationQuery] = useState('');
-  const [availableDestinations, setAvailableDestinations] = useState<DestinationCatalog[]>(destinationCatalog);
+  const [availableDestinations, setAvailableDestinations] = useState<DestinationCatalog[]>([]);
   const [isLoadingDestinations, setIsLoadingDestinations] = useState(false);
   const [destinationsError, setDestinationsError] = useState<string | null>(null);
+  const [packInventoryItems, setPackInventoryItems] = useState<PackInventoryItem[]>([]);
+  const [isLoadingPackInventory, setIsLoadingPackInventory] = useState(false);
+  const [packInventoryError, setPackInventoryError] = useState<string | null>(null);
   const [isLoadingPacks, setIsLoadingPacks] = useState(false);
   const [packsError, setPacksError] = useState<string | null>(null);
   const [selectedDestinationId, setSelectedDestinationId] = useState<string | null>(null);
@@ -94,10 +95,11 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   const [esimSubmitError, setEsimSubmitError] = useState<string | null>(null);
   const [esimFilter, setEsimFilter] = useState<EsimInventoryFilter>('all');
   const [esimInventoryItems, setEsimInventoryItems] = useState<EsimInventoryItem[]>([]);
-  const [allEsimInventoryItems, setAllEsimInventoryItems] = useState<EsimInventoryItem[]>([]);
+  const [availableEsimCount, setAvailableEsimCount] = useState(0);
   const [isLoadingEsimInventory, setIsLoadingEsimInventory] = useState(false);
   const [esimInventoryError, setEsimInventoryError] = useState<string | null>(null);
   const [liveWalletBalanceUsd, setLiveWalletBalanceUsd] = useState<number | null>(null);
+  const isFocused = useIsFocused();
 
   useEffect(() => {
     if (route.params?.initialTab) {
@@ -164,7 +166,6 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
       } catch (error) {
         if (!isCancelled) {
           setDestinationsError(error instanceof Error ? error.message : 'Could not load destinations right now.');
-          setAvailableDestinations(destinationCatalog);
         }
       } finally {
         if (!isCancelled) {
@@ -180,19 +181,37 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
     };
   }, []);
 
+  const refreshPackInventoryData = useCallback(async () => {
+    setIsLoadingPackInventory(true);
+    setPackInventoryError(null);
+
+    try {
+      const nextItems = await fetchPackInventory('all');
+      setPackInventoryItems(nextItems);
+    } catch (error) {
+      setPackInventoryError(error instanceof Error ? error.message : 'Could not load pack inventory.');
+    } finally {
+      setIsLoadingPackInventory(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab !== 'packs') {
+      return;
+    }
+
+    void refreshPackInventoryData();
+  }, [activeTab, refreshPackInventoryData]);
+
   const refreshEsimInventoryData = useCallback(
     async (nextFilter = esimFilter) => {
       setIsLoadingEsimInventory(true);
       setEsimInventoryError(null);
 
       try {
-        const [nextItems, allItems] = await Promise.all([
-          fetchEsimInventory(nextFilter),
-          fetchEsimInventory('all'),
-        ]);
-
-        setEsimInventoryItems(nextItems);
-        setAllEsimInventoryItems(allItems);
+        const nextInventory = await fetchEsimInventory(nextFilter);
+        setEsimInventoryItems(nextInventory.items);
+        setAvailableEsimCount(nextInventory.availableCount);
       } catch (error) {
         setEsimInventoryError(error instanceof Error ? error.message : 'Could not load eSIM inventory.');
       } finally {
@@ -203,12 +222,20 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   );
 
   useEffect(() => {
-    if (activeTab !== 'esims') {
+    if (!isFocused || activeTab !== 'packs') {
+      return;
+    }
+
+    void Promise.all([refreshPackInventoryData(), fetchDestinationCatalog().then(setAvailableDestinations).catch(() => undefined)]);
+  }, [activeTab, isFocused, refreshPackInventoryData]);
+
+  useEffect(() => {
+    if (!isFocused || activeTab !== 'esims') {
       return;
     }
 
     void refreshEsimInventoryData();
-  }, [activeTab, refreshEsimInventoryData]);
+  }, [activeTab, esimFilter, isFocused, refreshEsimInventoryData]);
 
   const filteredDestinations = useMemo(() => {
     const normalizedQuery = destinationQuery.trim().toLowerCase();
@@ -246,15 +273,41 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
   const filteredStockGroups = useMemo(() => {
     const normalizedQuery = packQuery.trim().toLowerCase();
+    const grouped = new Map<string, StockGroup>();
 
-    return stockGroups.filter((group) => {
+    packInventoryItems
+      .filter((item) => item.status === 'unallocated')
+      .forEach((item) => {
+        const key = `${item.destinationName}:${item.catalogId}`;
+        const current = grouped.get(key);
+
+        if (current) {
+          current.availableQuantity += 1;
+          return;
+        }
+
+        grouped.set(key, {
+          key,
+          destinationId: item.destinationName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+          destinationName: item.destinationName,
+          destinationFlag: item.destinationFlag,
+          packId: item.catalogId,
+          packName: item.packName,
+          dataAllowance: item.dataAllowance,
+          validity: item.validity,
+          priceUsd: item.priceUsd,
+          availableQuantity: 1,
+        });
+      });
+
+    return Array.from(grouped.values()).filter((group) => {
       const haystack =
         `${group.destinationName} ${group.packName} ${group.dataAllowance} ${group.validity}`.toLowerCase();
       return !normalizedQuery || haystack.includes(normalizedQuery);
     });
-  }, [packQuery, stockGroups]);
+  }, [packInventoryItems, packQuery]);
 
-  const recentPackActivity = useMemo(() => inventoryItems.slice(0, 6), [inventoryItems]);
+  const recentPackActivity = useMemo(() => packInventoryItems.slice(0, 6), [packInventoryItems]);
 
   const totalPackTopUpCost = useMemo(
     () => selectedPurchasePacks.reduce((sum, pack) => sum + pack.quantity * pack.priceUsd, 0),
@@ -274,7 +327,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
   }, [esimQuantityInput]);
   const esimTotalCost = esimQuantity * 1;
   const hasEsimBalanceIssue = esimQuantity > 0 && effectiveWalletBalanceUsd < esimTotalCost;
-  const totalEsimInventory = allEsimInventoryItems.length;
+  const totalEsimInventory = availableEsimCount;
 
   async function refreshWalletSummary() {
     try {
@@ -319,7 +372,6 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
       setAvailableDestinations(nextDestinations);
     } catch (error) {
       setDestinationsError(error instanceof Error ? error.message : 'Could not load destinations right now.');
-      setAvailableDestinations(destinationCatalog);
     } finally {
       setIsLoadingDestinations(false);
     }
@@ -428,7 +480,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
         body: `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory.`,
         accent: colors.primaryStrong,
       });
-      await refreshWalletSummary();
+      await Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
       resetPackFlow();
     } catch (error) {
       setPurchaseSubmitError(error instanceof Error ? error.message : 'Could not complete this purchase.');
@@ -466,7 +518,7 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
           : `${result.preview.totalUnits} pack${result.preview.totalUnits === 1 ? '' : 's'} added to inventory without assignment.`,
         accent: colors.primaryStrong,
       });
-      await refreshWalletSummary();
+      await Promise.all([refreshWalletSummary(), refreshPackInventoryData()]);
       resetPackFlow();
     } catch (error) {
       setPurchaseSubmitError(error instanceof Error ? error.message : 'Could not complete this purchase.');
@@ -552,43 +604,66 @@ export function InventoryScreen({ navigation, route }: AppTabScreenProps<'Invent
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Available pack inventory</Text>
-              {filteredStockGroups.map((group) => (
-                <View key={group.key} style={styles.stockCard}>
-                  <View style={styles.stockCardTopRow}>
-                    <View style={styles.stockCopy}>
-                      <Text style={styles.stockTitle}>
-                        {group.destinationFlag} {group.destinationName} • {group.packName}
-                      </Text>
-                      <Text style={styles.stockMeta}>
-                        {group.dataAllowance} • {group.validity} • ${group.priceUsd.toFixed(2)}
-                      </Text>
-                    </View>
-                    <View style={styles.quantityPill}>
-                      <Text style={styles.quantityPillText}>{group.availableQuantity}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.stockCardFooter}>
-                    <Text style={styles.stockFooterMeta}>Ready in inventory</Text>
-                    <Pressable onPress={() => prefillPackPurchase(group)} style={styles.inlineAction}>
-                      <Text style={styles.inlineActionText}>Buy more</Text>
-                    </Pressable>
-                  </View>
+              {isLoadingPackInventory ? (
+                <View style={styles.loadingPanel}>
+                  <ActivityIndicator color={colors.primaryStrong} size="small" />
+                  <Text style={styles.loadingText}>Loading pack inventory</Text>
                 </View>
-              ))}
+              ) : packInventoryError ? (
+                <View style={styles.warningCard}>
+                  <Text style={styles.warningBody}>{packInventoryError}</Text>
+                </View>
+              ) : filteredStockGroups.length ? (
+                filteredStockGroups.map((group) => (
+                  <View key={group.key} style={styles.stockCard}>
+                    <View style={styles.stockCardTopRow}>
+                      <View style={styles.stockCopy}>
+                        <Text style={styles.stockTitle}>
+                          {group.destinationFlag} {group.destinationName} • {group.packName}
+                        </Text>
+                        <Text style={styles.stockMeta}>
+                          {group.dataAllowance} • {group.validity} • ${group.priceUsd.toFixed(2)}
+                        </Text>
+                      </View>
+                      <View style={styles.quantityPill}>
+                        <Text style={styles.quantityPillText}>{group.availableQuantity}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.stockCardFooter}>
+                      <Text style={styles.stockFooterMeta}>Ready in inventory</Text>
+                      <Pressable onPress={() => prefillPackPurchase(group)} style={styles.inlineAction}>
+                        <Text style={styles.inlineActionText}>Buy more</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.emptyStateCard}>
+                  <Text style={styles.emptyStateTitle}>No pack inventory found</Text>
+                  <Text style={styles.emptyStateBody}>Purchased or unallocated packs will appear here.</Text>
+                </View>
+              )}
             </View>
 
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Recent pack activity</Text>
-              {recentPackActivity.map((item) => (
-                <View key={item.id} style={styles.logCard}>
-                  <Text style={styles.logTitle}>
-                    {item.destinationFlag} {item.destinationName} • {item.packName}
-                  </Text>
-                  <Text style={styles.logMeta}>
-                    {item.email ?? item.phone ?? 'Saved in inventory'} • {getRelativeTimeLabel(item.createdAt)}
-                  </Text>
+              {recentPackActivity.length ? (
+                recentPackActivity.map((item) => (
+                  <View key={item.id} style={styles.logCard}>
+                    <Text style={styles.logTitle}>
+                      {item.destinationFlag} {item.destinationName} • {item.packName}
+                    </Text>
+                    <Text style={styles.logMeta}>
+                      {item.receiverUserId ?? 'Saved in inventory'} • {getRelativeTimeLabel(item.updatedAt ?? item.createdAt)}
+                    </Text>
+                  </View>
+                ))
+              ) : (
+                <View style={styles.emptyStateCard}>
+                  <Text style={styles.emptyStateTitle}>No pack activity yet</Text>
+                  <Text style={styles.emptyStateBody}>Recent pack changes will appear here.</Text>
                 </View>
-              ))}
+              )}
             </View>
           </>
         ) : (
@@ -1130,7 +1205,7 @@ const styles = StyleSheet.create({
   },
   stockTitle: {
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '600',
     fontFamily: typography.heading,
     color: colors.text,
   },
@@ -1259,7 +1334,7 @@ const styles = StyleSheet.create({
   },
   logTitle: {
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '600',
     fontFamily: typography.heading,
     color: colors.text,
   },

@@ -21,7 +21,11 @@ type EsimInventoryApiItem = {
 };
 
 type EsimInventoryResponse = {
-  data?: EsimInventoryApiItem[];
+  data?: {
+    tenant_id: string;
+    available_count: number;
+    esims?: EsimInventoryApiItem[];
+  };
 };
 
 export type EsimInventoryItem = {
@@ -35,6 +39,11 @@ export type EsimInventoryItem = {
   userEmail?: string;
   userId?: string;
   vendor: string;
+};
+
+export type EsimInventoryData = {
+  availableCount: number;
+  items: EsimInventoryItem[];
 };
 
 function mapEsimInventoryItem(item: EsimInventoryApiItem): EsimInventoryItem {
@@ -52,7 +61,7 @@ function mapEsimInventoryItem(item: EsimInventoryApiItem): EsimInventoryItem {
   };
 }
 
-export async function fetchEsimInventory(status: EsimInventoryFilter): Promise<EsimInventoryItem[]> {
+export async function fetchEsimInventory(status: EsimInventoryFilter): Promise<EsimInventoryData> {
   let lastError: unknown = null;
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
@@ -67,12 +76,14 @@ export async function fetchEsimInventory(status: EsimInventoryFilter): Promise<E
         },
       });
 
-      return (response.data.data ?? [])
-        .map(mapEsimInventoryItem)
-        .sort(
-          (left, right) =>
-            new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
-        );
+      const payload = response.data.data;
+
+      return {
+        availableCount: payload?.available_count ?? 0,
+        items: (payload?.esims ?? [])
+          .map(mapEsimInventoryItem)
+          .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()),
+      };
     } catch (error) {
       lastError = error;
     }
