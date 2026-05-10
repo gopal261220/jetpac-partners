@@ -8,6 +8,7 @@ export type AuthStackParamList = {
 };
 
 export type BuyStackParamList = {
+  Workspace: undefined;
   DestinationList: undefined;
   DestinationPdp: { destinationId: string };
 };
@@ -15,8 +16,12 @@ export type BuyStackParamList = {
 export type AppTabsParamList = {
   Home: undefined;
   Buy: NavigatorScreenParams<BuyStackParamList> | undefined;
-  Cart: undefined;
-  Inventory: undefined;
+  Inventory:
+    | {
+        initialTab?: 'packs' | 'esims';
+        openPurchase?: 'packs' | 'esims';
+      }
+    | undefined;
   Wallet: undefined;
 };
 
@@ -40,6 +45,7 @@ export type BuyDestinationPdpScreenProps = NativeStackScreenProps<
   BuyStackParamList,
   'DestinationPdp'
 >;
+export type AllocateWorkspaceScreenProps = NativeStackScreenProps<BuyStackParamList, 'Workspace'>;
 
 export type AppTabScreenProps<T extends keyof AppTabsParamList> = CompositeScreenProps<
   BottomTabScreenProps<AppTabsParamList, T>,

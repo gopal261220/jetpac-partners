@@ -1,48 +1,86 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { BottomSheetModal } from '../../../components/BottomSheetModal';
 import { PrimaryButton } from '../../../components/PrimaryButton';
 import { ScreenContainer } from '../../../components/ScreenContainer';
-import type { AppTabsParamList, BuyDestinationPdpScreenProps } from '../../../navigation/types';
+import type { BuyDestinationPdpScreenProps } from '../../../navigation/types';
 import { colors } from '../../../theme/colors';
-import { CartPillButton } from '../components/CartPillButton';
+import { typography } from '../../../theme/typography';
 import { QuantityStepper } from '../components/QuantityStepper';
-import { useBuyCart } from '../context/BuyCartContext';
+import { useBuyFlow } from '../context/BuyFlowContext';
 import { findDestinationById } from '../data/catalog';
-import type { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import type { PurchaseOutcome, RecipientDraft } from '../types';
+
+const emptyRecipient: RecipientDraft = {
+  email: '',
+  phone: '',
+};
+
+function getOutcomeCopy(outcome: PurchaseOutcome['assignmentOutcome']) {
+  if (outcome === 'assigned') {
+    return {
+      title: 'Assigned',
+      body: 'Purchase and assignment completed.',
+      icon: 'checkmark',
+      iconBackground: colors.primary,
+    };
+  }
+
+  if (outcome === 'pending') {
+    return {
+      title: 'Pending',
+      body: 'Purchase completed and assignment is queued.',
+      icon: 'time-outline',
+      iconBackground: '#5D7181',
+    };
+  }
+
+  if (outcome === 'failed') {
+    return {
+      title: 'Needs retry',
+      body: 'Purchase completed. Inventory was saved for follow-up.',
+      icon: 'alert-outline',
+      iconBackground: colors.danger,
+    };
+  }
+
+  return {
+    title: 'Saved',
+    body: 'Purchase completed and packs were kept in inventory.',
+    icon: 'cube-outline',
+    iconBackground: colors.primaryStrong,
+  };
+}
 
 export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdpScreenProps) {
   const { destinationId } = route.params;
   const destination = findDestinationById(destinationId);
-  const { getSelectionsForDestination, itemCount, upsertDestinationSelection } = useBuyCart();
-  const parentNavigation = navigation.getParent<BottomTabNavigationProp<AppTabsParamList>>();
+  const { buildPurchasePreview, completePurchase, walletBalanceUsd } = useBuyFlow();
 
-  const currentSelections = useMemo(
-    () => getSelectionsForDestination(destinationId),
-    [destinationId, getSelectionsForDestination]
-  );
-  const [quantities, setQuantities] = useState<Record<string, number>>(currentSelections);
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [recipient, setRecipient] = useState<RecipientDraft>(emptyRecipient);
+  const [isReviewVisible, setIsReviewVisible] = useState(false);
+  const [purchaseOutcome, setPurchaseOutcome] = useState<PurchaseOutcome | null>(null);
 
   useEffect(() => {
-    setQuantities(currentSelections);
-  }, [currentSelections]);
+    setQuantities({});
+    setRecipient(emptyRecipient);
+    setPurchaseOutcome(null);
+    setIsReviewVisible(false);
+  }, [destinationId]);
 
-  const selectedUnits = useMemo(
-    () => Object.values(quantities).reduce((sum, value) => sum + value, 0),
-    [quantities]
-  );
-
-  const selectedSubtotal = useMemo(() => {
+  const preview = useMemo(() => {
     if (!destination) {
-      return 0;
+      return null;
     }
 
-    return destination.packs.reduce((sum, pack) => {
-      const quantity = quantities[pack.id] ?? 0;
-      return sum + quantity * pack.priceUsd;
-    }, 0);
-  }, [destination, quantities]);
+    return buildPurchasePreview(destination, quantities);
+  }, [buildPurchasePreview, destination, quantities]);
+
+  const hasRecipient = Boolean(recipient.email.trim() || recipient.phone.trim());
+  const hasInsufficientBalance = Boolean(preview && preview.walletBalanceAfterUsd < 0);
 
   function updateQuantity(packId: string, nextQuantity: number) {
     setQuantities((current) => ({
@@ -51,13 +89,35 @@ export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdp
     }));
   }
 
-  function handleSaveSelection() {
+  function handlePurchase(nextRecipient: RecipientDraft) {
     if (!destination) {
       return;
     }
 
-    upsertDestinationSelection(destination, quantities);
-    navigation.navigate('DestinationList');
+    const outcome = completePurchase(destination, quantities, nextRecipient);
+
+    if (!outcome) {
+      return;
+    }
+
+    setIsReviewVisible(false);
+    setPurchaseOutcome(outcome);
+    setQuantities({});
+    setRecipient(emptyRecipient);
+  }
+
+  function closeOutcome() {
+    setPurchaseOutcome(null);
+    navigation.popToTop();
+  }
+
+  function openInventory() {
+    setPurchaseOutcome(null);
+    navigation.getParent()?.navigate('Inventory');
+  }
+
+  function openWallet() {
+    navigation.getParent()?.navigate('Wallet');
   }
 
   if (!destination) {
@@ -73,9 +133,7 @@ export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdp
       >
         <View style={styles.emptyCard}>
           <Text style={styles.emptyTitle}>Destination unavailable</Text>
-          <Text style={styles.emptyDescription}>
-            Go back to the destination list and choose another country.
-          </Text>
+          <Text style={styles.emptyDescription}>Go back and choose another destination.</Text>
         </View>
       </ScreenContainer>
     );
@@ -88,81 +146,188 @@ export function BuyDestinationPdpScreen({ navigation, route }: BuyDestinationPdp
           <Text style={styles.navActionText}>Back</Text>
         </Pressable>
       }
-      rightAction={<CartPillButton itemCount={itemCount} onPress={() => parentNavigation?.navigate('Cart')} />}
-      subtitle={`${destination.region} • choose one or more packs`}
+      subtitle="Choose packs first. Purchase and assignment stay inside a quick sheet."
       title={destination.name}
     >
-      <View style={styles.heroCard}>
-        <View style={styles.heroFlagOrb}>
-          <Text style={styles.heroFlag}>{destination.flag}</Text>
-        </View>
-        <View style={styles.heroCopy}>
-          <Text style={styles.heroTitle}>{destination.name} data packs</Text>
-          <Text style={styles.heroSubtitle}>
-            Operators can select multiple packs and quantities before sending them into the cart.
-          </Text>
-          <View style={styles.heroMetaRow}>
-            <View style={styles.heroMetaChip}>
-              <Ionicons color={colors.primaryStrong} name="layers-outline" size={14} />
-              <Text style={styles.heroMetaText}>{destination.packs.length} pack types</Text>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={styles.heroCard}>
+          <View style={styles.heroMain}>
+            <View style={styles.heroFlagOrb}>
+              <Text style={styles.heroFlag}>{destination.flag}</Text>
             </View>
-            <View style={styles.heroMetaChip}>
-              <Ionicons color={colors.primaryStrong} name="bag-check-outline" size={14} />
-              <Text style={styles.heroMetaText}>Multi-select enabled</Text>
+            <View style={styles.heroCopy}>
+              <Text style={styles.heroTitle}>{destination.name}</Text>
+              <Text numberOfLines={2} style={styles.heroMeta}>
+                {destination.region}
+              </Text>
             </View>
           </View>
+          <View style={styles.balancePill}>
+            <Ionicons color={colors.primaryStrong} name="wallet-outline" size={15} />
+            <Text style={styles.balancePillText}>${walletBalanceUsd.toFixed(2)}</Text>
+          </View>
         </View>
-      </View>
 
-      <ScrollView contentContainerStyle={styles.packList} showsVerticalScrollIndicator={false}>
-        {destination.packs.map((pack) => {
-          const quantity = quantities[pack.id] ?? 0;
+        <View style={styles.packList}>
+          {destination.packs.map((pack) => {
+            const quantity = quantities[pack.id] ?? 0;
 
-          return (
-            <View key={pack.id} style={[styles.packCard, quantity > 0 && styles.packCardActive]}>
-              <View style={styles.packHeader}>
+            return (
+              <View key={pack.id} style={[styles.packCard, quantity > 0 && styles.packCardActive]}>
                 <View style={styles.packCopy}>
                   <Text style={styles.packName}>{pack.name}</Text>
-                  <View style={styles.packMetaRow}>
-                    <View style={styles.packMetaChip}>
-                      <Text style={styles.packMetaChipText}>{pack.dataAllowance}</Text>
-                    </View>
-                    <View style={styles.packMetaChip}>
-                      <Text style={styles.packMetaChipText}>{pack.validity}</Text>
-                    </View>
-                  </View>
+                  <Text style={styles.packMeta}>
+                    {pack.dataAllowance} • {pack.validity} • ${pack.priceUsd.toFixed(2)}
+                  </Text>
                 </View>
-                <Text style={styles.packPrice}>${pack.priceUsd}</Text>
-              </View>
-
-              <View style={styles.packFooter}>
-                <Text style={styles.packHint}>
-                  {quantity > 0 ? `${quantity} selected` : 'Tap + to add this pack'}
-                </Text>
                 <QuantityStepper
                   onDecrease={() => updateQuantity(pack.id, quantity - 1)}
                   onIncrease={() => updateQuantity(pack.id, quantity + 1)}
                   value={quantity}
                 />
               </View>
-            </View>
-          );
-        })}
+            );
+          })}
+        </View>
       </ScrollView>
 
       <View style={styles.footerCard}>
-        <View style={styles.footerSummary}>
-          <Text style={styles.footerTitle}>
-            {selectedUnits} pack{selectedUnits === 1 ? '' : 's'} selected
-          </Text>
-          <Text style={styles.footerAmount}>Subtotal ${selectedSubtotal.toFixed(2)}</Text>
+        <View style={styles.footerRow}>
+          <View style={styles.footerCopy}>
+            <Text style={styles.footerLabel}>
+              {preview?.totalUnits ?? 0} pack{preview?.totalUnits === 1 ? '' : 's'}
+            </Text>
+            <Text style={styles.footerBalance}>Balance ${walletBalanceUsd.toFixed(2)}</Text>
+          </View>
+          <Text style={styles.footerAmount}>${preview?.subtotalUsd.toFixed(2) ?? '0.00'}</Text>
         </View>
+        {hasInsufficientBalance && preview ? (
+          <View style={styles.warningCard}>
+            <View style={styles.warningCopy}>
+              <Text style={styles.warningTitle}>Low balance for this selection</Text>
+              <Text style={styles.warningBody}>
+                You need ${(preview.subtotalUsd - walletBalanceUsd).toFixed(2)} more to complete
+                this purchase.
+              </Text>
+            </View>
+            <Pressable onPress={openWallet} style={styles.warningAction}>
+              <Text style={styles.warningActionText}>Add Balance</Text>
+            </Pressable>
+          </View>
+        ) : null}
         <PrimaryButton
-          disabled={selectedUnits === 0}
-          label="Add selections to cart"
-          onPress={handleSaveSelection}
+          disabled={!preview || hasInsufficientBalance}
+          label="Continue"
+          onPress={() => setIsReviewVisible(true)}
         />
       </View>
+
+      <BottomSheetModal
+        onClose={() => setIsReviewVisible(false)}
+        subtitle={`${destination.flag} ${destination.name}`}
+        title="Purchase"
+        visible={isReviewVisible}
+      >
+        <View style={styles.sheetContent}>
+          <View style={styles.recipientCard}>
+            <View style={styles.recipientHeader}>
+              <Text style={styles.recipientTitle}>Recipient details</Text>
+              <Text style={styles.recipientHint}>
+                Add email, phone, or both to assign the pack right after purchase. Leave blank to
+                keep it in inventory for later.
+              </Text>
+            </View>
+            <TextInput
+              autoCapitalize="none"
+              keyboardType="email-address"
+              onChangeText={(value) => setRecipient((current) => ({ ...current, email: value }))}
+              placeholder="Email"
+              placeholderTextColor={colors.textSoft}
+              style={styles.input}
+              value={recipient.email}
+            />
+            <TextInput
+              keyboardType="phone-pad"
+              onChangeText={(value) => setRecipient((current) => ({ ...current, phone: value }))}
+              placeholder="Phone"
+              placeholderTextColor={colors.textSoft}
+              style={styles.input}
+              value={recipient.phone}
+            />
+          </View>
+
+          {preview ? (
+            <View style={styles.selectionList}>
+              {preview.lines.map((line) => (
+                <View key={line.packId} style={styles.selectionRow}>
+                  <Text style={styles.selectionName}>
+                    {line.packName} x{line.quantity}
+                  </Text>
+                  <Text style={styles.selectionAmount}>${line.totalPriceUsd.toFixed(2)}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
+          <View style={styles.summaryCard}>
+            <View style={styles.summaryTopRow}>
+              <Text style={styles.summaryLabel}>Purchase total</Text>
+              <Text style={styles.summaryAmount}>${preview?.subtotalUsd.toFixed(2) ?? '0.00'}</Text>
+            </View>
+          </View>
+
+          {hasInsufficientBalance ? (
+            <Text style={styles.insufficientText}>Not enough wallet balance for this selection.</Text>
+          ) : null}
+
+          <View style={styles.sheetActions}>
+            <PrimaryButton
+              disabled={!preview || hasInsufficientBalance}
+              label={hasRecipient ? 'Purchase & Assign' : 'Purchase Only'}
+              onPress={() => handlePurchase(recipient)}
+            />
+            {hasRecipient ? (
+              <PrimaryButton
+                label="Skip assignment"
+                onPress={() => handlePurchase(emptyRecipient)}
+                variant="secondary"
+              />
+            ) : null}
+          </View>
+        </View>
+      </BottomSheetModal>
+
+      <BottomSheetModal
+        onClose={closeOutcome}
+        subtitle="Purchase flow completed."
+        title="Result"
+        visible={Boolean(purchaseOutcome)}
+      >
+        {purchaseOutcome ? (
+          <View style={styles.sheetContent}>
+            {(() => {
+              const outcomeCopy = getOutcomeCopy(purchaseOutcome.assignmentOutcome);
+
+              return (
+                <View style={styles.resultCard}>
+                  <View style={[styles.resultIconOrb, { backgroundColor: outcomeCopy.iconBackground }]}>
+                    <Ionicons color={colors.surface} name={outcomeCopy.icon as never} size={22} />
+                  </View>
+                  <Text style={styles.resultTitle}>{outcomeCopy.title}</Text>
+                  <Text style={styles.resultBody}>{outcomeCopy.body}</Text>
+                  <Text style={styles.resultAmount}>
+                    ${purchaseOutcome.preview.subtotalUsd.toFixed(2)}
+                  </Text>
+                </View>
+              );
+            })()}
+            <View style={styles.sheetActions}>
+              <PrimaryButton label="Done" onPress={closeOutcome} />
+              <PrimaryButton label="Inventory" onPress={openInventory} variant="secondary" />
+            </View>
+          </View>
+        ) : null}
+      </BottomSheetModal>
     </ScreenContainer>
   );
 }
@@ -175,171 +340,305 @@ const styles = StyleSheet.create({
   navActionText: {
     fontSize: 15,
     fontWeight: '700',
+    fontFamily: typography.heading,
     color: colors.primary,
   },
-  heroCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
+  content: {
     gap: 14,
-    borderRadius: 28,
+    paddingBottom: 20,
+  },
+  heroCard: {
+    borderRadius: 26,
     backgroundColor: colors.surface,
-    padding: 20,
-    shadowColor: colors.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 3,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  heroMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
   },
   heroFlagOrb: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.surfaceSoft,
+    backgroundColor: colors.primarySoft,
   },
   heroFlag: {
-    fontSize: 32,
+    fontSize: 24,
   },
   heroCopy: {
     flex: 1,
-    gap: 6,
+    gap: 2,
   },
   heroTitle: {
     fontSize: 19,
-    fontWeight: '800',
+    fontWeight: '700',
+    fontFamily: typography.heading,
     color: colors.text,
   },
-  heroSubtitle: {
-    fontSize: 14,
-    lineHeight: 20,
+  heroMeta: {
+    fontSize: 13,
+    fontFamily: typography.body,
     color: colors.textMuted,
   },
-  heroMetaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 4,
-  },
-  heroMetaChip: {
+  balancePill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     borderRadius: 999,
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 7,
     backgroundColor: colors.primarySoft,
   },
-  heroMetaText: {
-    fontSize: 12,
+  balancePillText: {
+    fontSize: 13,
     fontWeight: '700',
+    fontFamily: typography.heading,
     color: colors.primaryStrong,
   },
   packList: {
-    gap: 12,
-    paddingBottom: 12,
+    gap: 10,
   },
   packCard: {
-    borderRadius: 24,
+    borderRadius: 18,
     backgroundColor: colors.surface,
-    padding: 18,
-    gap: 14,
-    shadowColor: colors.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 2,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   packCardActive: {
     borderWidth: 1,
-    borderColor: colors.primary,
-    backgroundColor: colors.surfaceMuted,
-  },
-  packHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
+    borderColor: colors.borderStrong,
   },
   packCopy: {
     flex: 1,
-    gap: 4,
-  },
-  packMetaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  packMetaChip: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    backgroundColor: colors.surfaceSoft,
-  },
-  packMetaChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.primaryStrong,
+    gap: 3,
   },
   packName: {
-    fontSize: 18,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.heading,
     color: colors.text,
   },
-  packPrice: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: colors.primaryStrong,
-  },
-  packFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 16,
-  },
-  packHint: {
-    flex: 1,
-    fontSize: 14,
+  packMeta: {
+    fontSize: 12,
+    fontFamily: typography.body,
     color: colors.textMuted,
   },
   footerCard: {
-    borderRadius: 24,
+    borderRadius: 22,
     backgroundColor: colors.surface,
-    padding: 16,
-    gap: 12,
+    padding: 14,
+    gap: 10,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  footerSummary: {
+  footerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  footerTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: colors.text,
+  footerCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  footerLabel: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  footerBalance: {
+    fontSize: 13,
+    fontFamily: typography.heading,
+    color: colors.primaryStrong,
   },
   footerAmount: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: colors.primary,
+    fontSize: 18,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.primaryStrong,
+  },
+  warningCard: {
+    borderRadius: 18,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  warningCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  warningTitle: {
+    fontSize: 13,
+    fontFamily: typography.heading,
+    fontWeight: '700',
+    color: colors.danger,
+  },
+  warningBody: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  warningAction: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: colors.primarySoft,
+  },
+  warningActionText: {
+    fontSize: 12,
+    fontFamily: typography.heading,
+    fontWeight: '700',
+    color: colors.primaryStrong,
   },
   emptyCard: {
-    borderRadius: 24,
+    borderRadius: 26,
     backgroundColor: colors.surface,
-    padding: 24,
+    padding: 22,
     gap: 8,
   },
   emptyTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '700',
+    fontFamily: typography.heading,
     color: colors.text,
   },
   emptyDescription: {
     fontSize: 14,
-    lineHeight: 20,
+    fontFamily: typography.body,
     color: colors.textMuted,
+  },
+  sheetContent: {
+    gap: 12,
+    paddingBottom: 8,
+  },
+  recipientCard: {
+    gap: 10,
+  },
+  recipientHeader: {
+    gap: 4,
+  },
+  recipientTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.text,
+  },
+  recipientHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  input: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.text,
+  },
+  selectionList: {
+    gap: 8,
+  },
+  selectionRow: {
+    borderRadius: 16,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  selectionName: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.text,
+  },
+  selectionAmount: {
+    fontSize: 14,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.primaryStrong,
+  },
+  summaryCard: {
+    borderRadius: 18,
+    backgroundColor: colors.surfaceMuted,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  summaryTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  summaryLabel: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  summaryAmount: {
+    fontSize: 18,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.primaryStrong,
+  },
+  insufficientText: {
+    fontSize: 13,
+    fontFamily: typography.body,
+    color: colors.danger,
+  },
+  sheetActions: {
+    gap: 10,
+  },
+  resultCard: {
+    borderRadius: 22,
+    backgroundColor: colors.surfaceMuted,
+    padding: 18,
+    gap: 10,
+    alignItems: 'flex-start',
+  },
+  resultIconOrb: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resultTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.text,
+  },
+  resultBody: {
+    fontSize: 14,
+    fontFamily: typography.body,
+    color: colors.textMuted,
+  },
+  resultAmount: {
+    fontSize: 22,
+    fontWeight: '700',
+    fontFamily: typography.heading,
+    color: colors.primaryStrong,
   },
 });

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { colors } from '../theme/colors';
+import { typography } from '../theme/typography';
 
 type PrimaryButtonProps = {
   label: string;
@@ -41,13 +42,13 @@ export function PrimaryButton({
 
 const styles = StyleSheet.create({
   button: {
-    minHeight: 54,
-    borderRadius: 16,
+    minHeight: 56,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 18,
   },
   buttonPrimary: {
     backgroundColor: colors.primary,
@@ -64,8 +65,9 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   label: {
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '700',
+    fontFamily: typography.heading,
   },
   labelPrimary: {
     color: colors.surface,

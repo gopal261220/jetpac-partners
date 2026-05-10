@@ -2,17 +2,17 @@ import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider } from './src/features/auth/context/AuthContext';
-import { BuyCartProvider } from './src/features/buy/context/BuyCartContext';
+import { BuyFlowProvider } from './src/features/buy/context/BuyFlowContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
 
 export default function App() {
   return (
     <SafeAreaProvider>
       <AuthProvider>
-        <BuyCartProvider>
+        <BuyFlowProvider>
           <StatusBar style="dark" />
           <RootNavigator />
-        </BuyCartProvider>
+        </BuyFlowProvider>
       </AuthProvider>
     </SafeAreaProvider>
   );

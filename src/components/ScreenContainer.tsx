@@ -3,6 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { colors } from '../theme/colors';
+import { typography } from '../theme/typography';
 
 type ScreenContainerProps = PropsWithChildren<{
   title: string;
@@ -42,27 +43,30 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 16,
-    gap: 16,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 20,
+    gap: 20,
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+    alignItems: 'flex-start',
+    gap: 14,
   },
   headerCopy: {
     flex: 1,
-    gap: 4,
+    gap: 6,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '800',
+    fontSize: 26,
+    fontWeight: '700',
+    fontFamily: typography.heading,
     color: colors.text,
   },
   subtitle: {
     fontSize: 14,
+    lineHeight: 20,
+    fontFamily: typography.body,
     color: colors.textMuted,
   },
 });
