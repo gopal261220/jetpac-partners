@@ -1,5 +1,13 @@
 import type { PropsWithChildren } from 'react';
-import { KeyboardAvoidingView, Platform, StyleSheet, Text, View } from 'react-native';
+import {
+  Image,
+  type ImageSourcePropType,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { colors } from '../../../theme/colors';
@@ -9,12 +17,14 @@ type AuthScreenLayoutProps = PropsWithChildren<{
   subtitle: string;
   error?: string;
   eyebrow?: string;
+  logoSource?: ImageSourcePropType;
 }>;
 
 export function AuthScreenLayout({
   children,
   eyebrow = 'Staging Auth0',
   error,
+  logoSource,
   subtitle,
   title,
 }: AuthScreenLayoutProps) {
@@ -25,6 +35,7 @@ export function AuthScreenLayout({
         style={styles.keyboardView}
       >
         <View style={styles.card}>
+          {logoSource ? <Image source={logoSource} style={styles.logo} resizeMode="contain" /> : null}
           <Text style={styles.eyebrow}>{eyebrow}</Text>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.subtitle}>{subtitle}</Text>
@@ -56,6 +67,12 @@ const styles = StyleSheet.create({
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 10 },
     elevation: 4,
+  },
+  logo: {
+    width: 200,
+    height: 72,
+    alignSelf: 'center',
+    marginBottom: 8,
   },
   eyebrow: {
     color: colors.primary,

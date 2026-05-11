@@ -30,6 +30,7 @@ export function SignInScreen({ navigation }: SignInScreenProps) {
   return (
     <AuthScreenLayout
       error={error}
+      logoSource={{ uri: 'https://content.jetpacglobal.com/web-images/how-esim-works/logo_dark.webp' }}
       subtitle={
         isNativeAuthSupported
           ? 'Use the same staging email OTP flow as Jetpac. We will send a real verification code.'
