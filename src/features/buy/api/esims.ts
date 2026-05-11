@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { TENANT_ID_STRING } from '../../../constants/app';
+import { requireCurrentTenantIdString } from '../../../constants/app';
 import { getCandidateApiBaseUrls } from './runtime';
 
 const ESIM_ORDER_TIMEOUT_MS = 12000;
@@ -14,13 +14,14 @@ type OrderEsimsResponse = {
 
 export async function orderEsims(quantity: number) {
   let lastError: unknown = null;
+  const tenantId = requireCurrentTenantIdString();
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
     try {
       const response = await axios.post<OrderEsimsResponse>(
         `${baseUrl}/api/esims/order`,
         {
-          tenant_id: TENANT_ID_STRING,
+          tenant_id: tenantId,
           quantity,
         },
         {

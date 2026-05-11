@@ -14,6 +14,7 @@ import type { VerifyOtpScreenProps } from '../../../navigation/types';
 import { colors } from '../../../theme/colors';
 import { AuthScreenLayout } from '../components/AuthScreenLayout';
 import { useAuth } from '../context/AuthContext';
+import { isTenantAccessError } from '../errors';
 
 export function VerifyOtpScreen({ navigation, route }: VerifyOtpScreenProps) {
   const { isNativeAuthSupported, sendEmailOtp, signInWithOtp, unsupportedMessage } = useAuth();
@@ -121,6 +122,24 @@ export function VerifyOtpScreen({ navigation, route }: VerifyOtpScreenProps) {
     try {
       await signInWithOtp(email, otpValue);
     } catch (nextError) {
+      if (isTenantAccessError(nextError)) {
+        setOtp(['', '', '', '', '', '']);
+        setFocusedIndex(0);
+        navigation.reset({
+          index: 0,
+          routes: [
+            {
+              name: 'SignIn',
+              params: {
+                prefilledEmail: email,
+                errorMessage: nextError.message,
+              },
+            },
+          ],
+        });
+        return;
+      }
+
       setError(
         nextError instanceof Error
           ? getOtpErrorMessage(nextError.message)

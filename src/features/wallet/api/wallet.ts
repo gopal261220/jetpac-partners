@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 import { getCandidateApiBaseUrls } from '../../buy/api/runtime';
-import { TENANT_ID } from '../../../constants/app';
+import { requireCurrentTenantId } from '../../../constants/app';
 
 const WALLET_TIMEOUT_MS = 8000;
 
@@ -101,10 +101,11 @@ function mapOrdersResponse(payload: WalletApiResponse): WalletOrder[] {
 
 export async function fetchWalletScreenData(limit = 20): Promise<WalletScreenData> {
   let lastError: unknown = null;
+  const tenantId = requireCurrentTenantId();
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
     try {
-      const walletResponse = await axios.get<WalletApiResponse>(`${baseUrl}/api/tenants/${TENANT_ID}/wallet`, {
+      const walletResponse = await axios.get<WalletApiResponse>(`${baseUrl}/api/tenants/${tenantId}/wallet`, {
         timeout: WALLET_TIMEOUT_MS,
         headers: {
           Accept: 'application/json',

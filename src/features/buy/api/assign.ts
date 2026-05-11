@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { TENANT_ID_STRING } from '../../../constants/app';
+import { requireCurrentTenantIdString } from '../../../constants/app';
 import { getCandidateApiBaseUrls } from './runtime';
 
 const ASSIGN_TIMEOUT_MS = 8000;
@@ -12,6 +12,7 @@ type AssignPackRequest = {
 
 export async function assignPackOrders(requests: AssignPackRequest[]) {
   let lastError: unknown = null;
+  const tenantId = requireCurrentTenantIdString();
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
     try {
@@ -20,7 +21,7 @@ export async function assignPackOrders(requests: AssignPackRequest[]) {
           axios.post(
             `${baseUrl}/api/packs/assign`,
             {
-              tenant_id: TENANT_ID_STRING,
+              tenant_id: tenantId,
               catalog_id: request.catalogId,
               ...(request.receiverUserId ? { receiver_user_id: request.receiverUserId } : {}),
             },

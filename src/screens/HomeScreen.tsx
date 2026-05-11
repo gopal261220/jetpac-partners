@@ -78,8 +78,7 @@ export function HomeScreen({ navigation }: AppTabScreenProps<'Home'>) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const firstName =
-    session?.user?.givenName ?? session?.user?.name?.split(' ')[0] ?? 'Partner Admin';
+  const companyName = session?.tenant?.companyName?.trim() || 'Jetpac Partner';
 
   const loadHomeDashboard = useCallback(async () => {
     setIsLoading(true);
@@ -127,7 +126,7 @@ export function HomeScreen({ navigation }: AppTabScreenProps<'Home'>) {
         </Pressable>
       }
       subtitle="Quick partner dashboard for wallet, pack top-ups, eSIM bulk purchase, and today’s sales."
-      title={`Hi, ${firstName}`}
+      title={`Hi, ${companyName}`}
     >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.balanceCard}>

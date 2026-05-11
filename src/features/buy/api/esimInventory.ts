@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { TENANT_ID_STRING } from '../../../constants/app';
+import { requireCurrentTenantIdString } from '../../../constants/app';
 import { getCandidateApiBaseUrls } from './runtime';
 
 const ESIM_INVENTORY_TIMEOUT_MS = 8000;
@@ -63,10 +63,11 @@ function mapEsimInventoryItem(item: EsimInventoryApiItem): EsimInventoryItem {
 
 export async function fetchEsimInventory(status: EsimInventoryFilter): Promise<EsimInventoryData> {
   let lastError: unknown = null;
+  const tenantId = requireCurrentTenantIdString();
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
     try {
-      const response = await axios.get<EsimInventoryResponse>(`${baseUrl}/api/esims/inventory/${TENANT_ID_STRING}`, {
+      const response = await axios.get<EsimInventoryResponse>(`${baseUrl}/api/esims/inventory/${tenantId}`, {
         timeout: ESIM_INVENTORY_TIMEOUT_MS,
         headers: {
           Accept: 'application/json',

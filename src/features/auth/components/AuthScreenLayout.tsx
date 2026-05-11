@@ -2,10 +2,12 @@ import type { PropsWithChildren } from 'react';
 import {
   Image,
   type ImageSourcePropType,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
   Text,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,7 +24,7 @@ type AuthScreenLayoutProps = PropsWithChildren<{
 
 export function AuthScreenLayout({
   children,
-  eyebrow = 'Staging Auth0',
+  eyebrow,
   error,
   logoSource,
   subtitle,
@@ -30,19 +32,21 @@ export function AuthScreenLayout({
 }: AuthScreenLayoutProps) {
   return (
     <SafeAreaView edges={['top']} style={styles.safeArea}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.keyboardView}
-      >
-        <View style={styles.card}>
-          {logoSource ? <Image source={logoSource} style={styles.logo} resizeMode="contain" /> : null}
-          <Text style={styles.eyebrow}>{eyebrow}</Text>
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.subtitle}>{subtitle}</Text>
-          <View style={styles.body}>{children}</View>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        </View>
-      </KeyboardAvoidingView>
+      <TouchableWithoutFeedback accessible={false} onPress={Keyboard.dismiss}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.keyboardView}
+        >
+          <View style={styles.card}>
+            {logoSource ? <Image source={logoSource} style={styles.logo} resizeMode="contain" /> : null}
+            {eyebrow ? <Text style={styles.eyebrow}>{eyebrow}</Text> : null}
+            <Text style={styles.title}>{title}</Text>
+            <Text style={styles.subtitle}>{subtitle}</Text>
+            <View style={styles.body}>{children}</View>
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          </View>
+        </KeyboardAvoidingView>
+      </TouchableWithoutFeedback>
     </SafeAreaView>
   );
 }

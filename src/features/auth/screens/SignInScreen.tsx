@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { PrimaryButton } from '../../../components/PrimaryButton';
@@ -7,11 +7,21 @@ import { colors } from '../../../theme/colors';
 import { AuthScreenLayout } from '../components/AuthScreenLayout';
 import { useAuth } from '../context/AuthContext';
 
-export function SignInScreen({ navigation }: SignInScreenProps) {
+export function SignInScreen({ navigation, route }: SignInScreenProps) {
   const { isNativeAuthSupported, sendEmailOtp, unsupportedMessage } = useAuth();
-  const [email, setEmail] = useState('');
-  const [error, setError] = useState('');
+  const [email, setEmail] = useState(route.params?.prefilledEmail ?? '');
+  const [error, setError] = useState(route.params?.errorMessage ?? '');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (route.params?.prefilledEmail) {
+      setEmail(route.params.prefilledEmail);
+    }
+
+    if (route.params?.errorMessage) {
+      setError(route.params.errorMessage);
+    }
+  }, [route.params?.errorMessage, route.params?.prefilledEmail]);
 
   async function handleContinue() {
     setIsSubmitting(true);
@@ -33,7 +43,7 @@ export function SignInScreen({ navigation }: SignInScreenProps) {
       logoSource={{ uri: 'https://content.jetpacglobal.com/web-images/how-esim-works/logo_dark.webp' }}
       subtitle={
         isNativeAuthSupported
-          ? 'Use the same staging email OTP flow as Jetpac. We will send a real verification code.'
+          ? 'Use your Jetpac partner email to receive a real verification code.'
           : unsupportedMessage ?? 'This auth flow is not available in the current runtime.'
       }
       title="Partner login"
@@ -52,7 +62,10 @@ export function SignInScreen({ navigation }: SignInScreenProps) {
         autoCapitalize="none"
         autoComplete="email"
         keyboardType="email-address"
-        onChangeText={setEmail}
+        onChangeText={(value) => {
+          setError('');
+          setEmail(value);
+        }}
         placeholder="admin@partner.com"
         placeholderTextColor="#7A869A"
         style={styles.input}
