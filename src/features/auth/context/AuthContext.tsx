@@ -10,17 +10,21 @@ import {
 import { Platform } from 'react-native';
 import { Auth0Provider, useAuth0, type Credentials } from 'react-native-auth0';
 
+import { setCurrentTenantId } from '../../../constants/app';
+import { fetchTenantByEmail } from '../api/tenant';
 import {
   AUTH0_AUDIENCE,
   AUTH0_SCOPE,
   getAuth0Config,
   getUnsupportedAuthMessage,
 } from '../config/auth0';
+import { TenantAccessError } from '../errors';
 import {
   clearStoredSession,
   getStoredSession,
   setStoredSession,
   type Session,
+  type SessionTenant,
   type SessionUser,
 } from '../storage/sessionStorage';
 
@@ -58,14 +62,18 @@ function mapUser(user?: SessionUser | null): SessionUser | null {
 function buildSession({
   credentials,
   email,
+  tenant,
   user,
 }: {
   credentials: Credentials;
   email: string;
+  tenant: SessionTenant;
   user?: SessionUser | null;
 }): Session {
   return {
     email,
+    tenantId: tenant.id,
+    tenant,
     accessToken: credentials.accessToken,
     idToken: credentials.idToken,
     tokenType: credentials.tokenType,
@@ -90,6 +98,7 @@ function UnsupportedAuthProvider({ children }: PropsWithChildren) {
         throw new Error(getUnsupportedAuthMessage());
       },
       async signOut() {
+        setCurrentTenantId(null);
         await clearStoredSession();
       },
     }),
@@ -114,6 +123,7 @@ function AuthStateProvider({ children }: PropsWithChildren) {
         const hasValidSession = await hasValidCredentials(60);
 
         if (!hasValidSession) {
+          setCurrentTenantId(null);
           await clearStoredSession();
 
           if (isMounted) {
@@ -124,18 +134,46 @@ function AuthStateProvider({ children }: PropsWithChildren) {
         }
 
         const credentials = await getCredentials(AUTH0_SCOPE, 60, {}, false);
+        const normalizedEmail = normalizeEmail(storedSession?.email ?? user?.email ?? '');
+        const storedTenant =
+          storedSession?.tenant && typeof storedSession.tenant.id === 'number'
+            ? storedSession.tenant
+            : null;
+        const tenantProfile =
+          storedTenant ??
+          (typeof storedSession?.tenantId === 'number'
+            ? {
+                id: storedSession.tenantId,
+              }
+            : await fetchTenantByEmail(normalizedEmail));
+
+        if (!tenantProfile) {
+          await clearStoredSession();
+          await clearCredentials();
+          setCurrentTenantId(null);
+
+          if (isMounted) {
+            setSession(null);
+          }
+
+          return;
+        }
+
         const nextSession = buildSession({
           credentials,
-          email: storedSession?.email ?? user?.email ?? '',
+          email: normalizedEmail,
+          tenant: tenantProfile,
           user,
         });
 
         await setStoredSession(nextSession);
+        setCurrentTenantId(tenantProfile.id);
 
         if (isMounted) {
           setSession(nextSession);
         }
       } catch {
+        setCurrentTenantId(null);
         await clearStoredSession();
 
         if (isMounted) {
@@ -153,7 +191,7 @@ function AuthStateProvider({ children }: PropsWithChildren) {
     return () => {
       isMounted = false;
     };
-  }, [getCredentials, hasValidCredentials, user]);
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -190,19 +228,32 @@ function AuthStateProvider({ children }: PropsWithChildren) {
             audience: AUTH0_AUDIENCE,
             scope: AUTH0_SCOPE,
           })) ?? (await getCredentials(AUTH0_SCOPE, 60, {}, false));
+        const tenantProfile = await fetchTenantByEmail(normalizedEmail);
+
+        if (!tenantProfile) {
+          await clearCredentials();
+          await clearStoredSession();
+          setCurrentTenantId(null);
+          throw new TenantAccessError(
+            'No tenant is registered for this email address. Please use a registered email or contact jetpacenterprise.com for access.'
+          );
+        }
 
         const nextSession = buildSession({
           credentials,
           email: normalizedEmail,
+          tenant: tenantProfile,
           user,
         });
 
         await setStoredSession(nextSession);
+        setCurrentTenantId(tenantProfile.id);
         setSession(nextSession);
       },
       async signOut() {
         await clearCredentials();
         await clearStoredSession();
+        setCurrentTenantId(null);
         setSession(null);
       },
     }),

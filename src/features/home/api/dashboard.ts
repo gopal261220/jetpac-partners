@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 import { getCandidateApiBaseUrls } from '../../buy/api/runtime';
-import { DEFAULT_TIMEZONE, TENANT_ID } from '../../../constants/app';
+import { DEFAULT_TIMEZONE, requireCurrentTenantId } from '../../../constants/app';
 
 const HOME_TIMEOUT_MS = 8000;
 
@@ -87,17 +87,18 @@ function mapSummaryResponse(payload: SummaryApiResponse): OrdersSummary | null {
 
 export async function fetchHomeDashboard(timezone = DEFAULT_TIMEZONE): Promise<HomeDashboardData> {
   let lastError: unknown = null;
+  const tenantId = requireCurrentTenantId();
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
     try {
       const [walletResponse, summaryResponse] = await Promise.all([
-        axios.get<WalletApiResponse>(`${baseUrl}/api/tenants/${TENANT_ID}/wallet`, {
+        axios.get<WalletApiResponse>(`${baseUrl}/api/tenants/${tenantId}/wallet`, {
           timeout: HOME_TIMEOUT_MS,
           headers: {
             Accept: 'application/json',
           },
         }),
-        axios.get<SummaryApiResponse>(`${baseUrl}/api/tenants/${TENANT_ID}/orders/summary`, {
+        axios.get<SummaryApiResponse>(`${baseUrl}/api/tenants/${tenantId}/orders/summary`, {
           timeout: HOME_TIMEOUT_MS,
           headers: {
             Accept: 'application/json',

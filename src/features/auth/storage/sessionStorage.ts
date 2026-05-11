@@ -8,8 +8,19 @@ export type SessionUser = Pick<
   'sub' | 'name' | 'givenName' | 'familyName' | 'email' | 'picture'
 >;
 
+export type SessionTenant = {
+  id: number;
+  tenantCode?: string;
+  companyName?: string;
+  status?: string;
+  isActive?: boolean;
+  contactPerson?: string;
+};
+
 export type Session = {
   email: string;
+  tenantId?: number;
+  tenant?: SessionTenant | null;
   accessToken: string;
   idToken: string;
   tokenType: string;

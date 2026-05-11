@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import { TENANT_ID } from '../../../constants/app';
+import { requireCurrentTenantId } from '../../../constants/app';
 import { destinationCatalog } from '../data/catalog';
 import { getCandidateApiBaseUrls } from './runtime';
 
@@ -98,10 +98,11 @@ function mapPackInventoryItem(item: PackInventoryApiItem): PackInventoryItem {
 
 export async function fetchPackInventory(status: PackInventoryStatusFilter): Promise<PackInventoryItem[]> {
   let lastError: unknown = null;
+  const tenantId = requireCurrentTenantId();
 
   for (const baseUrl of getCandidateApiBaseUrls()) {
     try {
-      const response = await axios.get<PackInventoryResponse>(`${baseUrl}/api/tenants/${TENANT_ID}/packs/inventory`, {
+      const response = await axios.get<PackInventoryResponse>(`${baseUrl}/api/tenants/${tenantId}/packs/inventory`, {
         timeout: PACK_INVENTORY_TIMEOUT_MS,
         headers: {
           Accept: 'application/json',

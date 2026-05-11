@@ -3,7 +3,12 @@ import type { CompositeScreenProps, NavigatorScreenParams } from '@react-navigat
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
 export type AuthStackParamList = {
-  SignIn: undefined;
+  SignIn:
+    | {
+        prefilledEmail?: string;
+        errorMessage?: string;
+      }
+    | undefined;
   VerifyOtp: { email: string };
 };
 

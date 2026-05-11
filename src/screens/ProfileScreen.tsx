@@ -8,7 +8,7 @@ import { colors } from '../theme/colors';
 
 export function ProfileScreen() {
   const { session, signOut } = useAuth();
-  const fullName = session?.user?.name ?? 'Partner Admin';
+  const companyName = session?.tenant?.companyName?.trim() || 'Jetpac Partner';
 
   return (
     <ScreenContainer
@@ -17,10 +17,10 @@ export function ProfileScreen() {
     >
       <View style={styles.heroCard}>
         <View style={styles.avatarOrb}>
-          <Text style={styles.avatarText}>{fullName.slice(0, 1).toUpperCase()}</Text>
+          <Text style={styles.avatarText}>{companyName.slice(0, 1).toUpperCase()}</Text>
         </View>
         <View style={styles.heroCopy}>
-          <Text style={styles.name}>{fullName}</Text>
+          <Text style={styles.name}>{companyName}</Text>
           <Text style={styles.email}>{session?.email}</Text>
         </View>
       </View>
@@ -32,7 +32,7 @@ export function ProfileScreen() {
           </View>
           <View style={styles.infoCopy}>
             <Text style={styles.infoLabel}>Organization</Text>
-            <Text style={styles.infoValue}>Jetpac Partners</Text>
+            <Text style={styles.infoValue}>{companyName}</Text>
           </View>
         </View>
 
